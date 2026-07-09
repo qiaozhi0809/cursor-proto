@@ -12,10 +12,12 @@ import (
 // v1 SSE frames (`data: {...}` followed by a blank line, terminating with
 // `data: [DONE]`).
 type OpenAIStreamWriter struct {
-	Model     string
-	ID        string
-	Created   int64
-	SentStart bool
+	Model       string
+	ID          string
+	Created     int64
+	SentStart   bool
+	SawToolCall bool
+	toolIndexes map[string]int
 }
 
 // NewOpenAIStreamWriter creates a writer with sensible defaults.
@@ -55,12 +57,17 @@ func (w *OpenAIStreamWriter) Encode(ev *Event) []byte {
 		if !w.SentStart {
 			w.SentStart = true
 		}
-		return w.frame(map[string]any{
+		idx := w.toolIndex(ev.ToolCallID)
+		w.SawToolCall = true
+		// Emit the tool_call header (id + name) and, when the args arrived
+		// in the same envelope (MCP calls do this), the arguments string.
+		var buf []byte
+		buf = append(buf, w.frame(map[string]any{
 			"index": 0,
 			"delta": map[string]any{
 				"role": "assistant",
 				"tool_calls": []map[string]any{{
-					"index": 0,
+					"index": idx,
 					"id":    ev.ToolCallID,
 					"type":  "function",
 					"function": map[string]any{
@@ -70,14 +77,33 @@ func (w *OpenAIStreamWriter) Encode(ev *Event) []byte {
 				}},
 			},
 			"finish_reason": nil,
-		}, "")
+		}, "")...)
+		if ev.ToolArgsDelta != "" {
+			buf = append(buf, w.frame(map[string]any{
+				"index": 0,
+				"delta": map[string]any{
+					"tool_calls": []map[string]any{{
+						"index": idx,
+						"function": map[string]any{
+							"arguments": ev.ToolArgsDelta,
+						},
+					}},
+				},
+				"finish_reason": nil,
+			}, "")...)
+		}
+		return buf
 
 	case EventToolCallDelta:
+		if ev.ToolArgsDelta == "" {
+			return nil
+		}
+		idx := w.toolIndex(ev.ToolCallID)
 		return w.frame(map[string]any{
 			"index": 0,
 			"delta": map[string]any{
 				"tool_calls": []map[string]any{{
-					"index": 0,
+					"index": idx,
 					"function": map[string]any{
 						"arguments": ev.ToolArgsDelta,
 					},
@@ -87,13 +113,32 @@ func (w *OpenAIStreamWriter) Encode(ev *Event) []byte {
 		}, "")
 
 	case EventTurnEnded:
+		finish := "stop"
+		if w.SawToolCall {
+			finish = "tool_calls"
+		}
 		return w.frame(map[string]any{
 			"index":         0,
 			"delta":         map[string]any{},
-			"finish_reason": "stop",
+			"finish_reason": finish,
 		}, "usage")
 	}
 	return nil
+}
+
+// toolIndex assigns a stable, dense OpenAI tool_calls index per tool_call_id.
+// OpenAI's Chat Completion API keys tool call deltas by an integer "index"
+// rather than the id, so we track the first-seen order and echo it back.
+func (w *OpenAIStreamWriter) toolIndex(callID string) int {
+	if w.toolIndexes == nil {
+		w.toolIndexes = map[string]int{}
+	}
+	if idx, ok := w.toolIndexes[callID]; ok {
+		return idx
+	}
+	idx := len(w.toolIndexes)
+	w.toolIndexes[callID] = idx
+	return idx
 }
 
 // FinalDone returns the terminal `data: [DONE]\n\n` frame.
@@ -132,6 +177,19 @@ func (a *NonStreamingAccumulator) Consume(ev *Event) {
 	switch ev.Kind {
 	case EventTextDelta:
 		a.Text += ev.Text
+	case EventToolCallStarted:
+		args := ev.ToolArgsDelta
+		if args == "" {
+			args = "{}"
+		}
+		a.ToolCalls = append(a.ToolCalls, map[string]any{
+			"id":   ev.ToolCallID,
+			"type": "function",
+			"function": map[string]any{
+				"name":      ev.ToolName,
+				"arguments": args,
+			},
+		})
 	case EventTurnEnded:
 		a.FinishStop = true
 		a.Usage = ev.Usage
@@ -145,18 +203,24 @@ func (a *NonStreamingAccumulator) Response(id string) []byte {
 		usage["completion_tokens"] = a.Usage.OutputTokens
 		usage["total_tokens"] = a.Usage.InputTokens + a.Usage.OutputTokens
 	}
+	msg := map[string]any{
+		"role":    "assistant",
+		"content": a.Text,
+	}
+	finish := "stop"
+	if len(a.ToolCalls) > 0 {
+		msg["tool_calls"] = a.ToolCalls
+		finish = "tool_calls"
+	}
 	obj := map[string]any{
 		"id":      id,
 		"object":  "chat.completion",
 		"created": time.Now().Unix(),
 		"model":   a.Model,
 		"choices": []map[string]any{{
-			"index": 0,
-			"message": map[string]string{
-				"role":    "assistant",
-				"content": a.Text,
-			},
-			"finish_reason": "stop",
+			"index":         0,
+			"message":       msg,
+			"finish_reason": finish,
 		}},
 		"usage": usage,
 	}

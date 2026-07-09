@@ -32,6 +32,23 @@ func (c *Client) buildAgentRunRequest(req *ChatRequest, messageID string) (*curs
 	}
 	reqCtx := &cursorpb.AgentV1_RequestContext{Env: env}
 
+	// If the caller advertised MCP tools, attach them to the model-visible
+	// catalog (field 7 in RequestContext) and add a matching McpInstructions
+	// entry (field 14). Cursor's server also needs AgentRunRequest.mcp_tools
+	// populated below, so tool calls route back via ExecServerMessage
+	// field 11 (McpArgs). Without the pair, either the model doesn't see the
+	// tool or the server drops the tool call before it reaches us.
+	toolDefs, err := buildMcpToolDefinitions(req.Tools)
+	if err != nil {
+		return nil, err
+	}
+	if len(toolDefs) > 0 {
+		reqCtx.Tools = toolDefs
+		if instr := buildMcpInstructions(req.Tools); instr != nil {
+			reqCtx.McpInstructions = []*cursorpb.AgentV1_McpInstructions{instr}
+		}
+	}
+
 	userMsg := &cursorpb.AgentV1_UserMessage{
 		Text:      req.UserMessage,
 		MessageId: messageID,
@@ -67,6 +84,15 @@ func (c *Client) buildAgentRunRequest(req *ChatRequest, messageID string) (*curs
 		arr.Harness = &req.Harness
 	} else if !req.PureMode {
 		arr.Harness = ptr("cursor-ide")
+	}
+
+	// AgentRunRequest.mcp_tools wraps the same McpToolDefinition list — this
+	// is what makes Cursor's server route tool calls back via
+	// ExecServerMessage field 11. Populating only RequestContext.tools would
+	// tell the model about the tools but the server would silently drop the
+	// resulting McpArgs frames.
+	if len(toolDefs) > 0 {
+		arr.McpTools = &cursorpb.AgentV1_McpTools{McpTools: toolDefs}
 	}
 	// NOTE: We *do not* forward the request's SystemPrompt into
 	// CustomSystemPrompt — Cursor's backend rejects that field with

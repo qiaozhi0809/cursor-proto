@@ -30,11 +30,14 @@ import (
 //	event: message_stop
 //	data: {}
 type AnthropicStreamWriter struct {
-	Model      string
-	ID         string
-	blockOpen  bool
-	blockIndex int
-	sentStart  bool
+	Model       string
+	ID          string
+	blockOpen   bool
+	blockIndex  int
+	sentStart   bool
+	// toolBlocks maps tool_call_id -> block index for its content_block.
+	toolBlocks  map[string]int
+	sawToolCall bool
 }
 
 func NewAnthropicStreamWriter(model string) *AnthropicStreamWriter {
@@ -91,6 +94,95 @@ func (w *AnthropicStreamWriter) Encode(ev *Event) []byte {
 		})...)
 		return buf
 
+	case EventToolCallStarted:
+		if !w.sentStart {
+			w.sentStart = true
+			buf = append(buf, w.frame("message_start", map[string]any{
+				"type": "message_start",
+				"message": map[string]any{
+					"id":            w.ID,
+					"type":          "message",
+					"role":          "assistant",
+					"model":         w.Model,
+					"content":       []any{},
+					"stop_reason":   nil,
+					"stop_sequence": nil,
+					"usage":         map[string]int{"input_tokens": 0, "output_tokens": 0},
+				},
+			})...)
+		}
+		// Close any open text block before opening the tool_use block —
+		// Anthropic streams have one content block open at a time.
+		if w.blockOpen {
+			buf = append(buf, w.frame("content_block_stop", map[string]any{
+				"type":  "content_block_stop",
+				"index": w.blockIndex,
+			})...)
+			w.blockOpen = false
+			w.blockIndex++
+		}
+		if w.toolBlocks == nil {
+			w.toolBlocks = map[string]int{}
+		}
+		toolIdx, seen := w.toolBlocks[ev.ToolCallID]
+		if !seen {
+			toolIdx = w.blockIndex
+			w.toolBlocks[ev.ToolCallID] = toolIdx
+			w.blockIndex++
+		}
+		w.sawToolCall = true
+		buf = append(buf, w.frame("content_block_start", map[string]any{
+			"type":  "content_block_start",
+			"index": toolIdx,
+			"content_block": map[string]any{
+				"type":  "tool_use",
+				"id":    ev.ToolCallID,
+				"name":  ev.ToolName,
+				"input": map[string]any{},
+			},
+		})...)
+		if ev.ToolArgsDelta != "" {
+			buf = append(buf, w.frame("content_block_delta", map[string]any{
+				"type":  "content_block_delta",
+				"index": toolIdx,
+				"delta": map[string]any{
+					"type":         "input_json_delta",
+					"partial_json": ev.ToolArgsDelta,
+				},
+			})...)
+		}
+		return buf
+
+	case EventToolCallDelta:
+		if ev.ToolArgsDelta == "" || w.toolBlocks == nil {
+			return nil
+		}
+		toolIdx, ok := w.toolBlocks[ev.ToolCallID]
+		if !ok {
+			return nil
+		}
+		return w.frame("content_block_delta", map[string]any{
+			"type":  "content_block_delta",
+			"index": toolIdx,
+			"delta": map[string]any{
+				"type":         "input_json_delta",
+				"partial_json": ev.ToolArgsDelta,
+			},
+		})
+
+	case EventToolCallCompleted:
+		if w.toolBlocks == nil {
+			return nil
+		}
+		toolIdx, ok := w.toolBlocks[ev.ToolCallID]
+		if !ok {
+			return nil
+		}
+		return w.frame("content_block_stop", map[string]any{
+			"type":  "content_block_stop",
+			"index": toolIdx,
+		})
+
 	case EventTurnEnded:
 		if w.blockOpen {
 			buf = append(buf, w.frame("content_block_stop", map[string]any{
@@ -99,6 +191,17 @@ func (w *AnthropicStreamWriter) Encode(ev *Event) []byte {
 			})...)
 			w.blockOpen = false
 		}
+		// Close any tool_use blocks that were opened but never received an
+		// explicit tool_call_completed event. Cursor doesn't send one when
+		// the SSE stalls waiting for a tool result, so we synthesize the
+		// content_block_stop frames here.
+		for _, idx := range w.toolBlocks {
+			buf = append(buf, w.frame("content_block_stop", map[string]any{
+				"type":  "content_block_stop",
+				"index": idx,
+			})...)
+		}
+		w.toolBlocks = nil
 		usage := map[string]any{"output_tokens": 0}
 		if ev.Usage != nil {
 			usage["input_tokens"] = ev.Usage.InputTokens
@@ -110,10 +213,14 @@ func (w *AnthropicStreamWriter) Encode(ev *Event) []byte {
 				usage["cache_creation_input_tokens"] = ev.Usage.CacheWriteTokens
 			}
 		}
+		stopReason := "end_turn"
+		if w.sawToolCall {
+			stopReason = "tool_use"
+		}
 		buf = append(buf, w.frame("message_delta", map[string]any{
 			"type": "message_delta",
 			"delta": map[string]any{
-				"stop_reason":   "end_turn",
+				"stop_reason":   stopReason,
 				"stop_sequence": nil,
 			},
 			"usage": usage,
