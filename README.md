@@ -339,29 +339,14 @@ Prebuilt binaries are published from tag pushes (`v*.*.*`) via
 The release workflow does not push a Docker image yet — that is a future
 improvement.
 
-## Legal & disclaimer
+## Disclaimer
 
-**This is reverse-engineered code for interoperability research.** The
-protocol schemas, header set, checksum algorithm, and machine-id derivation
-in this repository were recovered from Cursor's own publicly-shipped JS
-bundle (`workbench.desktop.main.js`) using standard reverse-engineering
-techniques.
+Independent reverse-engineering project. Not affiliated with, endorsed by,
+or connected to Anysphere Inc. or Cursor.
 
-- **Cursor** is a product of Anysphere Inc. This project has no affiliation
-  with, endorsement from, or connection to Anysphere or the Cursor brand.
-- Using this project to access Cursor's servers may violate the current
-  **Cursor Terms of Service**. The maintainers of this project are not
-  lawyers and make no representation about the legality of any specific use
-  in your jurisdiction. **You are responsible for reading Cursor's ToS and
-  applicable regulations before running this code against Cursor's
-  production infrastructure.**
-- No warranty. Provided **AS IS**. The protocol is a moving target — any
-  Cursor release can rename fields, add required headers, or rotate the
-  release hash and break this code without notice. Expect maintenance.
-- Do not use this project to redistribute Cursor's model responses at scale,
-  bypass paid tiers you have not purchased, or otherwise attempt to defraud
-  Cursor. The point of the code is portability and observability, not
-  freeloading.
+Provided **AS IS**, no warranty. Use at your own risk. You are solely
+responsible for compliance with Cursor's Terms of Service and any
+applicable laws.
 
 ## License
 
