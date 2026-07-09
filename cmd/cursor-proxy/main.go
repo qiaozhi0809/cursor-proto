@@ -61,9 +61,26 @@ type anthropicMessage struct {
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8317", "listen address")
 	apiKeysFlag := flag.String("api-keys", "", "comma-separated API keys required in Authorization: Bearer header; falls back to $"+apiKeysEnv+" when unset")
+	tokenFile := flag.String("token-file", "", "path to account JSON (overrides IDE SQLite lookup); "+
+		"env CURSOR_PROXY_ACCOUNT_FILE is used when this flag is empty")
 	flag.Parse()
 
-	acc := loadAccountFromIDE()
+	tokenPath := *tokenFile
+	if tokenPath == "" {
+		tokenPath = os.Getenv("CURSOR_PROXY_ACCOUNT_FILE")
+	}
+
+	var acc *auth.Account
+	if tokenPath != "" {
+		a, err := auth.LoadAccount(tokenPath)
+		if err != nil {
+			log.Fatalf("load account from %s: %v", tokenPath, err)
+		}
+		acc = a
+	} else {
+		acc = loadAccountFromIDE()
+	}
+
 	c := executor.NewClient(acc)
 	c.API3 = c.API2 // chat also lives on api2
 
