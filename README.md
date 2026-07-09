@@ -341,12 +341,18 @@ improvement.
 
 ## Disclaimer
 
-Independent reverse-engineering project. Not affiliated with, endorsed by,
-or connected to Anysphere Inc. or Cursor.
+This project exists purely for **research, study, and educational purposes** —
+protocol analysis, reverse-engineering practice, and interoperability
+experiments. It is **not a product**, not affiliated with any commercial
+entity, and not intended for production or commercial use.
 
-Provided **AS IS**, no warranty. Use at your own risk. You are solely
-responsible for compliance with Cursor's Terms of Service and any
-applicable laws.
+**No affiliation.** Independent research project. Unrelated to Anysphere Inc.,
+Cursor, or any of their subsidiaries, partners, or brands.
+
+**No warranty.** Provided **AS IS**. Use is entirely at your own risk. You
+are solely responsible for what you do with the code and for compliance
+with all applicable terms of service, laws, and regulations in your
+jurisdiction.
 
 ## License
 
