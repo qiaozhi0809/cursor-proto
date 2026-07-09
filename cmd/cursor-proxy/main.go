@@ -32,10 +32,18 @@ import (
 // ---------- OpenAI schemas ----------
 
 type openaiChatRequest struct {
-	Model    string          `json:"model"`
-	Messages []openaiMessage `json:"messages"`
-	Stream   bool            `json:"stream"`
-	Tools    []openaiTool    `json:"tools"`
+	Model         string               `json:"model"`
+	Messages      []openaiMessage      `json:"messages"`
+	Stream        bool                 `json:"stream"`
+	Tools         []openaiTool         `json:"tools"`
+	StreamOptions *openaiStreamOptions `json:"stream_options"`
+}
+
+// openaiStreamOptions mirrors OpenAI's `stream_options` object. Today only
+// `include_usage` is supported; when true, we emit a final usage-only
+// chunk (choices: []) before `data: [DONE]`.
+type openaiStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type openaiMessage struct {
@@ -210,7 +218,8 @@ func openaiChatHandler(c *executor.Client) http.HandlerFunc {
 		}
 
 		if req.Stream {
-			streamOpenAI(w, req.Model, events)
+			includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
+			streamOpenAI(w, req.Model, events, includeUsage)
 			return
 		}
 		nonStreamOpenAI(w, req.Model, events)
@@ -261,13 +270,14 @@ func convertAnthropicTools(in []anthropicTool) []executor.ToolDefinition {
 	return out
 }
 
-func streamOpenAI(w http.ResponseWriter, model string, events <-chan executor.ChatEvent) {
+func streamOpenAI(w http.ResponseWriter, model string, events <-chan executor.ChatEvent, includeUsage bool) {
 	w.Header().Set("content-type", "text/event-stream")
 	w.Header().Set("cache-control", "no-cache")
 	w.Header().Set("x-accel-buffering", "no")
 	flusher, _ := w.(http.Flusher)
 
 	tr := translator.NewOpenAIStreamWriter(model)
+	tr.IncludeUsage = includeUsage
 	assistantSent := ""
 	sawTurnEnd := false
 	for ev := range events {
@@ -317,6 +327,12 @@ func streamOpenAI(w http.ResponseWriter, model string, events <-chan executor.Ch
 			if flusher != nil {
 				flusher.Flush()
 			}
+		}
+	}
+	if payload := tr.FinalUsageFrame(); len(payload) > 0 {
+		w.Write(payload)
+		if flusher != nil {
+			flusher.Flush()
 		}
 	}
 	w.Write(tr.FinalDone())
@@ -522,10 +538,7 @@ func nonStreamAnthropic(w http.ResponseWriter, model string, events <-chan execu
 		"stop_sequence": nil,
 	}
 	if usage != nil {
-		resp["usage"] = map[string]any{
-			"input_tokens":  usage.InputTokens,
-			"output_tokens": usage.OutputTokens,
-		}
+		resp["usage"] = translator.BuildAnthropicUsage(usage)
 	}
 	w.Header().Set("content-type", "application/json")
 	json.NewEncoder(w).Encode(resp)
