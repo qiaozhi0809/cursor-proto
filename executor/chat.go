@@ -284,7 +284,7 @@ func bytesContains(haystack, needle []byte) bool {
 func (c *Client) bidiAppend(ctx context.Context, requestID string, seq int64, payload []byte) error {
 	body, err := proto.Marshal(&cursorpb.AiserverV1_BidiAppendRequest{
 		Data:        hexEncode(payload), // legacy field, CursorGateway still populates this
-		DataBinary:  payload,             // 3.10 preferred wire form
+		DataBinary:  payload,            // 3.10 preferred wire form
 		RequestId:   &cursorpb.AiserverV1_BidiRequestId{RequestId: requestID},
 		AppendSeqno: seq,
 	})
