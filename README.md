@@ -161,6 +161,44 @@ grep -oE '[a-f0-9]{64}' /Applications/Cursor.app/Contents/Resources/app/product.
 # then update auth.KnownReleaseHash_3_10_20
 ```
 
+## Docker
+
+Prebuilt image workflow — see `Dockerfile` and `docker-compose.yml`.
+
+```bash
+# 1. Put an account JSON where compose can see it.
+#    Generate one with `cursor-login` (writes cursor-<email>.json), then:
+mkdir -p accounts
+cp cursor-you@example.com.json accounts/current.json
+
+# 2. Start the proxy (localhost-only bind by default)
+docker compose up -d --build
+
+# 3. Smoke-test
+curl http://127.0.0.1:8317/v1/models
+```
+
+Environment variables:
+
+- `CURSOR_PROXY_API_KEYS` — comma-separated allowlist for the proxy's future
+  `-api-keys` gate (empty = unauthenticated; do not leave empty on a public
+  network).
+- `CURSOR_PROXY_ACCOUNT_FILE` — absolute path inside the container to the
+  account JSON. `docker-compose.yml` mounts `./accounts` at `/data/accounts:ro`
+  and defaults this to `/data/accounts/current.json`.
+
+The compose file binds the port to `127.0.0.1:8317` by default. To expose it
+on all interfaces (only behind a trusted network), change `ports:` to
+`"8317:8317"`.
+
+Prebuilt binaries are published from tag pushes (`v*.*.*`) via
+`.github/workflows/release.yml`:
+
+- `linux/amd64`, `linux/arm64`, `darwin/arm64`
+
+The release workflow does not push a Docker image yet — that is a future
+improvement.
+
 ## Warning
 
 This is reverse-engineered code. Cursor's Terms of Service explicitly prohibit

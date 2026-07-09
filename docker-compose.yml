@@ -1,0 +1,24 @@
+services:
+  cursor-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cursor-proxy:local
+    container_name: cursor-proxy
+    restart: unless-stopped
+    # Localhost-only bind by default. Change to "8317:8317" to expose on all
+    # interfaces — do that only behind a trusted network, since API-key auth is
+    # not yet enforced by every route.
+    ports:
+      - "127.0.0.1:8317:8317"
+    environment:
+      # Comma-separated allowlist of API keys required by the proxy.
+      # Empty (or unset) means the proxy will accept unauthenticated calls —
+      # keep it set in any exposed deployment.
+      CURSOR_PROXY_API_KEYS: "${CURSOR_PROXY_API_KEYS:-}"
+      # Path inside the container to the account JSON produced by cursor-login.
+      CURSOR_PROXY_ACCOUNT_FILE: "/data/accounts/current.json"
+    volumes:
+      # Mount the account JSON directory read-only. Populate ./accounts/
+      # on the host (e.g. copy cursor-<email>.json to ./accounts/current.json).
+      - ./accounts:/data/accounts:ro
