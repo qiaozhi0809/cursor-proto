@@ -8,6 +8,127 @@ Built by rebuilding Cursor 3.10.20's private wire protocol from the shipped
 `workbench.desktop.main.js` (39 MB) — proto schemas, checksum algorithm,
 machine-id derivation, session identifiers, and header set.
 
+## Architecture
+
+### High-level: how a request flows
+
+```
+┌────────────────────┐    OpenAI / Anthropic JSON    ┌────────────────────────┐
+│  Any OpenAI or     │  ───────────────────────────▶ │      cursor-proxy      │
+│  Anthropic client  │                                │  (this project)        │
+│  (Cline, Claude    │ ◀────── SSE / JSON ─────────  │                        │
+│   Code, Cursor CLI,│                                │  ┌──────────────────┐  │
+│   custom scripts)  │                                │  │ auth middleware  │  │
+└────────────────────┘                                │  │ (API keys)       │  │
+                                                      │  └──────────────────┘  │
+                                                      │  ┌──────────────────┐  │
+                                                      │  │ translator       │  │
+                                                      │  │ (in/out shape)   │  │
+                                                      │  └──────────────────┘  │
+                                                      │  ┌──────────────────┐  │
+                                                      │  │ executor         │  │
+                                                      │  │ (Cursor protocol)│  │
+                                                      │  └──────────────────┘  │
+                                                      └───────────┬────────────┘
+                                                                  │
+                                                                  ▼
+                                          ┌──────────────────────────────────────────┐
+                                          │        api2.cursor.sh (private)          │
+                                          │  aiserver.v1.AiService/AvailableModels   │
+                                          │  aiserver.v1.BidiService/BidiAppend      │
+                                          │  aiserver.v1.DashboardService/GetMe …    │
+                                          │  agent.v1.AgentService/RunSSE            │
+                                          └──────────────────────────────────────────┘
+```
+
+### Chat: OpenAI request → Cursor RunSSE + BidiAppend
+
+```
+Client                cursor-proxy              executor                api2.cursor.sh
+  │                       │                        │                          │
+  │  POST /v1/chat/       │                        │                          │
+  │  completions          │                        │                          │
+  ├──────────────────────▶│                        │                          │
+  │                       │ RequireAPIKeys         │                          │
+  │                       │ (401 if wrong key)     │                          │
+  │                       │                        │                          │
+  │                       │ ChatRequest{model,     │                          │
+  │                       │   messages, tools,     │                          │
+  │                       │   system, history}     │                          │
+  │                       ├───────────────────────▶│                          │
+  │                       │                        │ build AgentRunRequest    │
+  │                       │                        │ (proto), splice system   │
+  │                       │                        │ prompt + history         │
+  │                       │                        │                          │
+  │                       │                        │ POST RunSSE ─────────────▶ (open SSE)
+  │                       │                        │ POST BidiAppend ─────────▶ (send msg)
+  │                       │                        │                          │
+  │                       │                        │ ◀── heartbeat            │
+  │                       │                        │ ◀── text_delta (sparse)  │
+  │                       │                        │ ◀── KV assistant blob    │
+  │                       │                        │ ◀── turn_ended + usage   │
+  │                       │                        │                          │
+  │                       │ ◀──── ChatEvent chan ──│                          │
+  │  SSE:                 │                        │                          │
+  │  data: {delta:role}   │                        │                          │
+  │  data: {delta:content}│                        │                          │
+  │  data: {finish:stop}  │                        │                          │
+  │  data: [DONE]         │                        │                          │
+  │◀──────────────────────│                        │                          │
+```
+
+### Tools: tools[] in → tool_calls out (MCP)
+
+```
+tools:[{name:get_weather}]              McpTools + RequestContext.Tools
+      │                                    │
+      ▼                                    ▼
+OpenAI/Anthropic JSON  ──▶  AgentRunRequest.mcp_tools = [
+                                   { name, description,
+                                     input_schema: <Value>,  ← wrapped, NOT Struct
+                                     provider_identifier: "cursor-tools" } ]
+                                                │
+                                                ▼
+                                    Cursor server routes tool call
+                                                │
+                                                ▼
+                             ExecServerMessage.mcp_args {
+                                 tool_call_id, tool_name, args
+                             }
+                                                │
+                                                ▼
+                            translator emits OpenAI tool_calls
+                            or Anthropic content_block[type=tool_use]
+```
+
+### Auth / checksum construction
+
+```
+Cursor OAuth (loginDeepControl)
+        │
+        ▼
+    accessToken (JWT, ~60d)  ─────────────────────────────┐
+        │                                                 │
+        ├─────▶ savedAccount.json (also has refresh_token,│
+        │       machine_id, mac_machine_id)               │
+        │                                                 ▼
+        ▼                                          Authorization: Bearer <JWT>
+Every outbound request:                            x-cursor-checksum: <derived>
+
+    session_start (time.Now())                       │
+        │                                            │
+        ▼                                            │
+    E = unix_ms / 1e6                                │
+    raw = 6 bytes packed by JS 32-bit shift rules    │
+    obf = tVg(raw)  ← xor+add mixer, seed=165        │
+    b64 = base64(obf)                                │
+                                                     │
+    machineID    = SHA-256(IOPlatformUUID)   ─────┐  │
+    macMachineID = SHA-256(first MAC address) ────┼──┤
+                                                  │  │
+    checksum = <b64><machineID>/<macMachineID>  ──┴──┘
+```
+
 ## Status
 
 | Phase | Content | Status |
@@ -18,7 +139,13 @@ machine-id derivation, session identifiers, and header set.
 | 4 | Auth module (checksum + machine id + OAuth) | ✅ macMachineID byte-perfect vs IDE |
 | 5 | Executor (chat / agent RunSSE + BidiAppend) | ✅ end-to-end AI reply |
 | 6 | Translator (OpenAI + Anthropic SSE) | ✅ HTTP proxy live |
-| 7 | Integration / packaging | 🚧 in progress |
+| 7-A | MCP tools (tools[] → tool_calls) | ✅ `get_weather(Paris)` round-trips |
+| 7-B | Real per-token streaming | ⚠️ not feasible (see `docs/phase-7b-streaming.md`) |
+| 7-C | API key auth middleware | ✅ constant-time compare, env + flag |
+| 7-D | Multi-turn conversation | ✅ "Remember 42" test passes |
+| 7-E | Docker + CI + release workflow | ✅ Dockerfile + 2 GHA workflows |
+| 7-F | CPA integration | ✅ converter + plugin skeleton |
+| 7-G | Usage / rate-limit / country snapshot | ✅ `/v1/usage` endpoint |
 
 ## Repository layout
 
