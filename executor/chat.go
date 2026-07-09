@@ -58,6 +58,19 @@ type ChatRequest struct {
 	// turn_ended interaction arrives. Without this the server keeps the SSE
 	// open with heartbeats indefinitely.
 	AutoStopOnTurnEnd bool
+
+	// AutoStopOnToolCall closes the event channel as soon as an
+	// ExecServerMessage carrying McpArgs arrives — i.e. the model has
+	// requested a user-supplied tool. Cursor's server pauses the SSE at that
+	// point waiting for a BidiAppend tool result; without this flag the
+	// stream would hang until the heartbeat deadline.
+	AutoStopOnToolCall bool
+
+	// Tools is the caller-supplied MCP tool list. When non-empty, the tools
+	// are advertised to the model both via AgentRunRequest.mcp_tools (routing
+	// registration) and RequestContext.tools (model-visible catalog). See
+	// docs/phase-7a-mcp.md for the wire-format decisions.
+	Tools []ToolDefinition
 }
 
 // ChatEvent is one decoded server-side envelope from the SSE stream.
@@ -163,7 +176,7 @@ func (c *Client) RunChat(ctx context.Context, req *ChatRequest) (<-chan ChatEven
 	}
 
 	events := make(chan ChatEvent, 32)
-	go readSSEStream(sseResp.Body, events, req.AutoStopOnTurnEnd)
+	go readSSEStream(sseResp.Body, events, req.AutoStopOnTurnEnd, req.AutoStopOnToolCall)
 	return events, nil
 }
 
@@ -175,7 +188,7 @@ const postAssistantGrace = 1 * time.Second
 // arriving — protects against a server that never sends turn_ended.
 const heartbeatDeadline = 60 * time.Second
 
-func readSSEStream(body io.ReadCloser, out chan<- ChatEvent, autoStopOnTurnEnd bool) {
+func readSSEStream(body io.ReadCloser, out chan<- ChatEvent, autoStopOnTurnEnd, autoStopOnToolCall bool) {
 	defer close(out)
 	defer body.Close()
 
@@ -233,6 +246,13 @@ func readSSEStream(body io.ReadCloser, out chan<- ChatEvent, autoStopOnTurnEnd b
 							// turn_ended came first; wait for the assistant
 							// blob up to a bounded window.
 							setDeadline(heartbeatDeadline / 6) // 10s
+						}
+						// A user-tool call parks the SSE stream while the
+						// server waits for a BidiAppend tool result. Callers
+						// can opt into short-circuiting that wait so the
+						// tool_calls response returns to the client promptly.
+						if autoStopOnToolCall && msg.GetExecServerMessage().GetMcpArgs() != nil {
+							setDeadline(postAssistantGrace)
 						}
 					}
 				}

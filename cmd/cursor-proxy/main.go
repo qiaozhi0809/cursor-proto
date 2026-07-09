@@ -35,11 +35,26 @@ type openaiChatRequest struct {
 	Model    string          `json:"model"`
 	Messages []openaiMessage `json:"messages"`
 	Stream   bool            `json:"stream"`
+	Tools    []openaiTool    `json:"tools"`
 }
 
 type openaiMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+// openaiTool matches the OpenAI Chat Completion `tools[]` shape. Only
+// `type: "function"` is supported today; other types (e.g. code_interpreter)
+// are ignored with a debug log.
+type openaiTool struct {
+	Type     string              `json:"type"`
+	Function *openaiToolFunction `json:"function"`
+}
+
+type openaiToolFunction struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
 }
 
 // ---------- Anthropic schemas ----------
@@ -49,11 +64,18 @@ type anthropicMessagesRequest struct {
 	System   any                `json:"system"`
 	Messages []anthropicMessage `json:"messages"`
 	Stream   bool               `json:"stream"`
+	Tools    []anthropicTool    `json:"tools"`
 }
 
 type anthropicMessage struct {
 	Role    string `json:"role"`
 	Content any    `json:"content"`
+}
+
+type anthropicTool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"input_schema"`
 }
 
 // ---------- main ----------
@@ -170,14 +192,17 @@ func openaiChatHandler(c *executor.Client) http.HandlerFunc {
 			history = append(history, executor.HistoryTurn{Role: m.Role, Content: m.Content})
 		}
 
+		tools := convertOpenAITools(req.Tools)
 		events, err := c.RunChat(r.Context(), &executor.ChatRequest{
-			Model:             req.Model,
-			UserMessage:       userText,
-			SystemPrompt:      systemPrompt,
-			History:           history,
-			ConversationID:    r.Header.Get("x-conversation-id"),
-			PureMode:          true,
-			AutoStopOnTurnEnd: true,
+			Model:              req.Model,
+			UserMessage:        userText,
+			SystemPrompt:       systemPrompt,
+			History:            history,
+			ConversationID:     r.Header.Get("x-conversation-id"),
+			PureMode:           true,
+			AutoStopOnTurnEnd:  true,
+			AutoStopOnToolCall: len(tools) > 0,
+			Tools:              tools,
 		})
 		if err != nil {
 			http.Error(w, err.Error(), 502)
@@ -192,6 +217,50 @@ func openaiChatHandler(c *executor.Client) http.HandlerFunc {
 	}
 }
 
+// convertOpenAITools flattens the OpenAI tools[] wrapper into
+// executor.ToolDefinition. Non-function entries and entries missing a name
+// are skipped.
+func convertOpenAITools(in []openaiTool) []executor.ToolDefinition {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]executor.ToolDefinition, 0, len(in))
+	for _, t := range in {
+		if t.Type != "" && t.Type != "function" {
+			continue
+		}
+		if t.Function == nil || t.Function.Name == "" {
+			continue
+		}
+		out = append(out, executor.ToolDefinition{
+			Name:        t.Function.Name,
+			Description: t.Function.Description,
+			InputSchema: t.Function.Parameters,
+		})
+	}
+	return out
+}
+
+// convertAnthropicTools converts Anthropic-style `tools[]` into
+// executor.ToolDefinition.
+func convertAnthropicTools(in []anthropicTool) []executor.ToolDefinition {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]executor.ToolDefinition, 0, len(in))
+	for _, t := range in {
+		if t.Name == "" {
+			continue
+		}
+		out = append(out, executor.ToolDefinition{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		})
+	}
+	return out
+}
+
 func streamOpenAI(w http.ResponseWriter, model string, events <-chan executor.ChatEvent) {
 	w.Header().Set("content-type", "text/event-stream")
 	w.Header().Set("cache-control", "no-cache")
@@ -200,6 +269,7 @@ func streamOpenAI(w http.ResponseWriter, model string, events <-chan executor.Ch
 
 	tr := translator.NewOpenAIStreamWriter(model)
 	assistantSent := ""
+	sawTurnEnd := false
 	for ev := range events {
 		if ev.Server == nil {
 			continue
@@ -220,8 +290,30 @@ func streamOpenAI(w http.ResponseWriter, model string, events <-chan executor.Ch
 		if trEv == nil {
 			continue
 		}
-		if trEv.Kind == translator.EventTurnEnded {
-			w.Write(tr.Encode(trEv))
+		switch trEv.Kind {
+		case translator.EventToolCallStarted, translator.EventToolCallDelta:
+			if payload := tr.Encode(trEv); len(payload) > 0 {
+				w.Write(payload)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		case translator.EventTurnEnded:
+			sawTurnEnd = true
+			if payload := tr.Encode(trEv); len(payload) > 0 {
+				w.Write(payload)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		}
+	}
+	// If a tool call arrived but the server never sent turn_ended (typical
+	// when Cursor is waiting on a BidiAppend tool result), synthesize a
+	// finish_reason=tool_calls terminator so OpenAI clients see a valid stop.
+	if !sawTurnEnd && tr.SawToolCall {
+		if payload := tr.Encode(&translator.Event{Kind: translator.EventTurnEnded}); len(payload) > 0 {
+			w.Write(payload)
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -244,7 +336,13 @@ func nonStreamOpenAI(w http.ResponseWriter, model string, events <-chan executor
 			continue
 		}
 		trEv := translator.FromServerMessage(ev.Server)
-		if trEv != nil && trEv.Kind == translator.EventTurnEnded {
+		if trEv == nil {
+			continue
+		}
+		switch trEv.Kind {
+		case translator.EventToolCallStarted:
+			acc.Consume(trEv)
+		case translator.EventTurnEnded:
 			acc.Usage = trEv.Usage
 			acc.FinishStop = true
 		}
@@ -296,14 +394,17 @@ func anthropicMessagesHandler(c *executor.Client) http.HandlerFunc {
 			})
 		}
 
+		tools := convertAnthropicTools(req.Tools)
 		events, err := c.RunChat(r.Context(), &executor.ChatRequest{
-			Model:             req.Model,
-			UserMessage:       userText,
-			SystemPrompt:      systemPrompt,
-			History:           history,
-			ConversationID:    r.Header.Get("x-conversation-id"),
-			PureMode:          true,
-			AutoStopOnTurnEnd: true,
+			Model:              req.Model,
+			UserMessage:        userText,
+			SystemPrompt:       systemPrompt,
+			History:            history,
+			ConversationID:     r.Header.Get("x-conversation-id"),
+			PureMode:           true,
+			AutoStopOnTurnEnd:  true,
+			AutoStopOnToolCall: len(tools) > 0,
+			Tools:              tools,
 		})
 		if err != nil {
 			http.Error(w, err.Error(), 502)
@@ -343,7 +444,18 @@ func streamAnthropic(w http.ResponseWriter, model string, events <-chan executor
 			continue
 		}
 		trEv := translator.FromServerMessage(ev.Server)
-		if trEv != nil && trEv.Kind == translator.EventTurnEnded {
+		if trEv == nil {
+			continue
+		}
+		switch trEv.Kind {
+		case translator.EventToolCallStarted, translator.EventToolCallDelta, translator.EventToolCallCompleted:
+			if payload := tr.Encode(trEv); len(payload) > 0 {
+				w.Write(payload)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		case translator.EventTurnEnded:
 			lastUsage = trEv.Usage
 		}
 	}
@@ -357,6 +469,7 @@ func streamAnthropic(w http.ResponseWriter, model string, events <-chan executor
 func nonStreamAnthropic(w http.ResponseWriter, model string, events <-chan executor.ChatEvent) {
 	assistantText := ""
 	var usage *translator.Usage
+	var toolUses []map[string]any
 	for ev := range events {
 		if ev.Server == nil {
 			continue
@@ -366,17 +479,46 @@ func nonStreamAnthropic(w http.ResponseWriter, model string, events <-chan execu
 			continue
 		}
 		trEv := translator.FromServerMessage(ev.Server)
-		if trEv != nil && trEv.Kind == translator.EventTurnEnded {
+		if trEv == nil {
+			continue
+		}
+		switch trEv.Kind {
+		case translator.EventToolCallStarted:
+			var input any = map[string]any{}
+			if trEv.ToolArgsDelta != "" {
+				var parsed any
+				if err := json.Unmarshal([]byte(trEv.ToolArgsDelta), &parsed); err == nil {
+					input = parsed
+				}
+			}
+			toolUses = append(toolUses, map[string]any{
+				"type":  "tool_use",
+				"id":    trEv.ToolCallID,
+				"name":  trEv.ToolName,
+				"input": input,
+			})
+		case translator.EventTurnEnded:
 			usage = trEv.Usage
 		}
+	}
+	content := []map[string]any{}
+	if assistantText != "" {
+		content = append(content, map[string]any{"type": "text", "text": assistantText})
+	}
+	for _, tu := range toolUses {
+		content = append(content, tu)
+	}
+	stopReason := "end_turn"
+	if len(toolUses) > 0 {
+		stopReason = "tool_use"
 	}
 	resp := map[string]any{
 		"id":            "msg_" + auth.GenerateSessionID(),
 		"type":          "message",
 		"role":          "assistant",
 		"model":         model,
-		"content":       []map[string]string{{"type": "text", "text": assistantText}},
-		"stop_reason":   "end_turn",
+		"content":       content,
+		"stop_reason":   stopReason,
 		"stop_sequence": nil,
 	}
 	if usage != nil {
