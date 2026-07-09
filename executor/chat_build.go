@@ -58,8 +58,16 @@ func (c *Client) buildAgentRunRequest(req *ChatRequest, messageID string) (*curs
 		UserMessage:    userMsg,
 		RequestContext: reqCtx,
 	}
-	if hist := buildConversationHistory(req.History); hist != nil {
-		umAction.ConversationHistory = hist
+	if !req.OmitConversationHistoryWire {
+		if hist := buildConversationHistory(req.History); hist != nil {
+			umAction.ConversationHistory = hist
+		}
+	}
+	if len(req.PrependUserMessages) > 0 {
+		umAction.PrependUserMessages = buildPrependUserMessages(req.PrependUserMessages)
+	}
+	if req.SendToInteractionListener != nil {
+		umAction.SendToInteractionListener = req.SendToInteractionListener
 	}
 	action := &cursorpb.AgentV1_ConversationAction{
 		Action: &cursorpb.AgentV1_ConversationAction_UserMessageAction{
@@ -156,6 +164,29 @@ func buildConversationHistory(turns []HistoryTurn) *cursorpb.AgentV1_Conversatio
 		// the history into the prompt fed to the model.
 		ReplaceUserInfo: &replace,
 	}
+}
+
+// buildPrependUserMessages projects HistoryTurn entries onto
+// AgentV1_UserMessage protos so we can probe whether Cursor treats
+// UserMessageAction.prepend_user_messages (field 4) as a history channel.
+// Because the field carries UserMessage protos (no assistant variant), any
+// non-user turn is serialized as an inline "[ASSISTANT]: ..." user turn.
+func buildPrependUserMessages(turns []HistoryTurn) []*cursorpb.AgentV1_UserMessage {
+	if len(turns) == 0 {
+		return nil
+	}
+	out := make([]*cursorpb.AgentV1_UserMessage, 0, len(turns))
+	for _, t := range turns {
+		if t.Content == "" {
+			continue
+		}
+		text := t.Content
+		if t.Role == "assistant" {
+			text = "[ASSISTANT]: " + t.Content
+		}
+		out = append(out, &cursorpb.AgentV1_UserMessage{Text: text})
+	}
+	return out
 }
 
 func ptr[T any](v T) *T { return &v }

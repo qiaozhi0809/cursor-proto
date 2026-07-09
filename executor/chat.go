@@ -71,6 +71,28 @@ type ChatRequest struct {
 	// registration) and RequestContext.tools (model-visible catalog). See
 	// docs/phase-7a-mcp.md for the wire-format decisions.
 	Tools []ToolDefinition
+
+	// OmitSplicedHistory disables the in-band `<prior_conversation>` block
+	// that RunChat normally injects when History is non-empty. Combined with
+	// a stable ConversationID this lets callers probe whether Cursor's
+	// backend remembers prior turns on its own.
+	OmitSplicedHistory bool
+
+	// OmitConversationHistoryWire skips populating
+	// UserMessageAction.ConversationHistory. History is still consumed by
+	// the splice step (unless OmitSplicedHistory is also set), so callers
+	// can experiment with the wire field and the in-band transcript
+	// independently.
+	OmitConversationHistoryWire bool
+
+	// PrependUserMessages, when non-nil, is written to
+	// UserMessageAction.PrependUserMessages (field 4). Used to probe whether
+	// Cursor treats that channel as an alternative history transport.
+	PrependUserMessages []HistoryTurn
+
+	// SendToInteractionListener toggles UserMessageAction.send_to_interaction_listener
+	// (field 3). Nil leaves the field unset. Exposed for research probes.
+	SendToInteractionListener *bool
 }
 
 // ChatEvent is one decoded server-side envelope from the SSE stream.
@@ -122,7 +144,11 @@ func (c *Client) RunChat(ctx context.Context, req *ChatRequest) (<-chan ChatEven
 	// forward-compat but also splice the history in-band into the current
 	// user turn so the model actually sees it. This mirrors how SystemPrompt
 	// is handled above.
-	if len(req.History) > 0 {
+	//
+	// Callers probing server-side memory can set OmitSplicedHistory to skip
+	// the in-band splice; ConversationHistory-only behaviour is controlled
+	// by OmitConversationHistoryWire (consumed in chat_build.go).
+	if len(req.History) > 0 && !req.OmitSplicedHistory {
 		req.UserMessage = spliceHistory(req.History, req.UserMessage)
 	}
 
