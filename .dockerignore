@@ -1,0 +1,49 @@
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Reverse-engineering artefacts + docs
+captures/
+docs/
+reference/
+
+# Test/diagnostic sub-binaries (only cursor-proxy ships in the image)
+cmd/test-*
+
+# Local build outputs
+bin/
+*.log
+phase-*-verify.log
+phase-*-blockers.md
+cursor-proxy
+cursor-login
+
+# Editor / tool state
+.claude/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Secrets — never bake into an image
+.env
+.env.*
+*.token
+.cursor-token
+*.cursor-token
+accounts/
+auths/
+
+# Compose overrides / CI (not needed inside the image)
+docker-compose*.yml
+.github/
+
+# Python tooling (scripts/ is Python-only, unused at runtime)
+scripts/
+__pycache__/
+*.py[cod]

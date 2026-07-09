@@ -1,0 +1,94 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            apt: libsqlite3-dev
+          - name: linux-arm64
+            # Native arm64 hosted runner. Public repos get this for free; on
+            # private repos it may need to be enabled in Actions settings.
+            runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            apt: libsqlite3-dev
+          - name: darwin-arm64
+            runner: macos-14
+            goos: darwin
+            goarch: arm64
+            apt: ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: true
+
+      - name: Install CGO deps (Linux)
+        if: matrix.apt != ''
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ${{ matrix.apt }}
+
+      - name: Build
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w" \
+            -o dist/cursor-proxy-${{ matrix.name }} \
+            ./cmd/cursor-proxy
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cursor-proxy-${{ matrix.name }}
+          path: dist/cursor-proxy-${{ matrix.name }}
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/cursor-proxy-*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
