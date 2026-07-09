@@ -1,0 +1,246 @@
+syntax = "proto3";
+
+// Cursor dashboard/usage RPCs. These messages are transported to
+// aiserver.v1.DashboardService and aiserver.v1.AiService, but are declared in a
+// separate proto file (kept OUT of gen/cursor/) because the core extraction
+// scoped the main cursor.proto to chat/agent flows. Wire format is preserved
+// (all field numbers and types match Cursor 3.10.20 exactly).
+package cursor_usage;
+
+option go_package = "github.com/router-for-me/cursor-proto/usage/pb;usagepb";
+
+// ---------- DashboardService/GetCurrentPeriodUsage ----------
+
+message GetCurrentPeriodUsageRequest {
+  optional int32 team_id = 1;
+}
+
+message GetCurrentPeriodUsageResponse {
+  message PlanUsage {
+    int32 total_spend = 1;
+    int32 included_spend = 2;
+    int32 bonus_spend = 3;
+    int32 remaining = 4;
+    int32 limit = 5;
+    optional bool remaining_bonus = 6;
+    optional string bonus_tooltip = 7;
+    optional int32 auto_spend = 8;
+    optional int32 api_spend = 9;
+    optional int32 auto_limit = 10;
+    optional int32 api_limit = 11;
+    optional double auto_percent_used = 12;
+    optional double api_percent_used = 13;
+    optional double total_percent_used = 14;
+  }
+
+  message SpendLimitUsage {
+    int32 total_spend = 1;
+    optional int32 pooled_limit = 2;
+    optional int32 pooled_used = 3;
+    optional int32 pooled_remaining = 4;
+    optional int32 individual_limit = 5;
+    int32 individual_used = 6;
+    int32 individual_remaining = 7;
+    string limit_type = 8;
+    optional int32 overall_limit = 9;
+    optional int32 overall_used = 10;
+    optional int32 overall_remaining = 11;
+  }
+
+  message FreeBestOfNPromotion {
+    int32 trials_used = 1;
+    int32 trials_remaining = 2;
+  }
+
+  int64 billing_cycle_start = 1;
+  int64 billing_cycle_end = 2;
+  PlanUsage plan_usage = 3;
+  SpendLimitUsage spend_limit_usage = 4;
+  optional int32 display_threshold = 5;
+  bool enabled = 6;
+  string display_message = 7;
+  optional FreeBestOfNPromotion free_best_of_n_promotion = 8;
+  optional string auto_model_selected_display_message = 11;
+  optional string named_model_selected_display_message = 12;
+  repeated string auto_bucket_models = 13;
+}
+
+// ---------- DashboardService/GetCurrentBillingCycle ----------
+
+message GetCurrentBillingCycleRequest {
+  optional int32 team_id = 1;
+}
+
+message GetCurrentBillingCycleResponse {
+  int64 start_date_epoch_millis = 1;
+  int64 end_date_epoch_millis = 2;
+}
+
+// ---------- DashboardService/GetAggregatedUsageEvents ----------
+
+message GetAggregatedUsageEventsRequest {
+  int32 team_id = 1;
+  optional int64 start_date = 2;
+  optional int64 end_date = 3;
+  optional int32 user_id = 4;
+}
+
+message GetAggregatedUsageEventsResponse {
+  message ModelUsageAggregation {
+    string model_intent = 1;
+    int64 input_tokens = 2;
+    int64 output_tokens = 3;
+    int64 cache_write_tokens = 4;
+    int64 cache_read_tokens = 5;
+    double total_cents = 6;
+    optional double request_cost = 7;
+    optional int32 tier = 8;
+  }
+
+  repeated ModelUsageAggregation aggregations = 1;
+  int64 total_input_tokens = 2;
+  int64 total_output_tokens = 3;
+  int64 total_cache_write_tokens = 4;
+  int64 total_cache_read_tokens = 5;
+  double total_cost_cents = 6;
+  double percent_of_burst_used = 7;
+  optional double total_request_cost = 8;
+}
+
+// ---------- DashboardService/GetUsageBasedPremiumRequests ----------
+
+message GetUsageBasedPremiumRequestsRequest {
+  int32 team_id = 1;
+}
+
+message GetUsageBasedPremiumRequestsResponse {
+  bool usage_based_premium_requests = 1;
+}
+
+// ---------- DashboardService/GetHardLimit ----------
+
+message GetHardLimitRequest {
+  optional int32 team_id = 1;
+}
+
+message GetHardLimitResponse {
+  int32 hard_limit = 1;
+  bool no_usage_based_allowed = 2;
+  optional int32 hard_limit_per_user = 3;
+  int32 per_user_monthly_limit_dollars = 4;
+  bool is_dynamic_team_limit = 5;
+  bool has_pending_setup_onboarding_credit_claim = 6;
+  bool is_setup_promo_active = 7;
+  optional int32 setup_promo_amount_cents = 8;
+  optional int32 setup_promo_credit_validity_days = 9;
+}
+
+// ---------- AiService/GetUsageLimitStatusAndActiveGrants ----------
+
+message ActiveCreditGrant {
+  string grant_id = 1;
+  int64 total_cents = 2;
+  int64 remaining_cents = 3;
+  int64 expires_at_ms = 4;
+  repeated string allowed_model_ids = 5;
+  repeated string allowed_model_tags = 6;
+  string grant_type = 7;
+  optional int32 slowness_ms = 8;
+  optional string source = 9;
+  optional string campaign_name = 10;
+  bool show_in_client = 11;
+  repeated string allowed_client_types = 12;
+}
+
+message GetUsageLimitStatusAndActiveGrantsRequest {}
+
+message GetUsageLimitStatusAndActiveGrantsResponse {
+  message UsageLimitPolicyStatus {
+    bool is_in_slow_pool = 1;
+    optional string error_title = 2;
+    optional string error_detail = 3;
+    optional int32 slowness_ms = 4;
+    map<string, string> features = 5;
+    bool can_configure_spend_limit = 6;
+    optional string limit_type = 7;
+    bool has_pending_request = 8;
+    repeated string allowed_model_ids = 9;
+    repeated string allowed_model_tags = 10;
+    // primary_button omitted (ErrorButton has complex oneof; not needed here)
+    // stage (LimitHitStage enum) omitted; wire compatibility preserved
+    optional string tray_label = 13;
+    optional string tray_description = 14;
+    optional string cta_label = 15;
+    optional bool dismissible = 16;
+    optional int64 reset_at_ms = 17;
+    optional int32 reset_days_remaining = 18;
+    optional bool can_adjust_on_demand = 19;
+    optional int64 recommended_on_demand_limit_cents = 20;
+    optional int64 on_demand_min_cents = 21;
+    optional int64 on_demand_max_cents = 22;
+    optional int64 current_on_demand_limit_cents = 23;
+  }
+
+  UsageLimitPolicyStatus usage_limit_policy_status = 1;
+  repeated ActiveCreditGrant active_grants = 2;
+}
+
+// ---------- DashboardService/GetMe ----------
+
+message GetMeRequest {
+  optional int32 team_id = 1;
+  optional string source_site_hostname = 2;
+}
+
+message GetMeResponse {
+  string auth_id = 1;
+  int32 user_id = 2;
+  optional string email = 3;
+  optional string first_name = 4;
+  optional string last_name = 5;
+  optional string workos_id = 6;
+  optional int32 team_id = 7;
+  optional string created_at = 8;
+  optional bool is_enterprise_user = 9;
+  optional string team_name = 10;
+  // email_domain_type is what the wire calls this; downstream surfaces it as
+  // "sign_up_type" (e.g. "non-professional") for CPA account list display.
+  optional string email_domain_type = 11;
+  optional string country = 12;
+  optional string profile_picture_url = 13;
+  optional bool cursor_review_onboarding_use_cursor_github_app = 14;
+  optional int64 organization_id = 15;
+  optional string organization_public_id = 16;
+  optional bool is_team_admin = 17;
+}
+
+// ---------- DashboardService/GetUsageLimitPolicyStatus ----------
+
+message GetUsageLimitPolicyStatusRequest {}
+
+// Same shape as UsageLimitPolicyStatus (Cursor uses two RPCs that return
+// isomorphic payloads); we ONLY consume from GetUsageLimitStatusAndActiveGrants
+// but define this response for completeness.
+message GetUsageLimitPolicyStatusResponse {
+  bool is_in_slow_pool = 1;
+  optional string error_title = 2;
+  optional string error_detail = 3;
+  optional int32 slowness_ms = 4;
+  map<string, string> features = 5;
+  bool can_configure_spend_limit = 6;
+  optional string limit_type = 7;
+  bool has_pending_request = 8;
+  repeated string allowed_model_ids = 9;
+  repeated string allowed_model_tags = 10;
+  optional string tray_label = 13;
+  optional string tray_description = 14;
+  optional string cta_label = 15;
+  optional bool dismissible = 16;
+  optional int64 reset_at_ms = 17;
+  optional int32 reset_days_remaining = 18;
+  optional bool can_adjust_on_demand = 19;
+  optional int64 recommended_on_demand_limit_cents = 20;
+  optional int64 on_demand_min_cents = 21;
+  optional int64 on_demand_max_cents = 22;
+  optional int64 current_on_demand_limit_cents = 23;
+}
