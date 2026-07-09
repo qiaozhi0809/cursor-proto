@@ -1,0 +1,20 @@
+# 大文件与二进制样本
+captures/*.js
+captures/*.har
+captures/*.pcap
+captures/*.bin
+captures/*.raw
+
+# token / 敏感文件
+*.cursor-token
+.env
+*.pem
+*.key
+
+# Go 产物
+*.pb.go
+vendor/
+
+# 开发临时
+tmp/
+.DS_Store
