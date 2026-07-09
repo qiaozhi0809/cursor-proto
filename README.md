@@ -303,9 +303,19 @@ The proxy forwards it in the standard OpenAI / Anthropic usage shape:
 }
 ```
 
-Client-side prompt caching (Anthropic-style `cache_control: ephemeral`) is
-**not supported** — Cursor's server ignores that field. Whatever cache we
-report is what Cursor's own cache layer produced.
+### Not supported: client-directed cache writes
+
+Anthropic's official API lets clients declare `"cache_control": {"type": "ephemeral"}`
+on a content block to trigger a 5-minute paid cache (90% off on subsequent
+reads). **Cursor's server ignores that field entirely.** You cannot use this
+proxy to pay Anthropic-style cache rates — Cursor bills you by its own
+rules (fast/slow request quotas, not Anthropic's token pricing). The cache
+numbers we do report (`cache_read_input_tokens`) come from Cursor's own
+server-side cache of its internal system prompt, not from anything the
+client asked for.
+
+TL;DR: **the cached_tokens field is informational; sending
+`cache_control` doesn't save you money.**
 
 ## Non-obvious findings
 
