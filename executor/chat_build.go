@@ -41,6 +41,9 @@ func (c *Client) buildAgentRunRequest(req *ChatRequest, messageID string) (*curs
 		UserMessage:    userMsg,
 		RequestContext: reqCtx,
 	}
+	if hist := buildConversationHistory(req.History); hist != nil {
+		umAction.ConversationHistory = hist
+	}
 	action := &cursorpb.AgentV1_ConversationAction{
 		Action: &cursorpb.AgentV1_ConversationAction_UserMessageAction{
 			UserMessageAction: umAction,
@@ -71,6 +74,62 @@ func (c *Client) buildAgentRunRequest(req *ChatRequest, messageID string) (*curs
 	// callers should splice the system prompt into UserMessage themselves
 	// (RunChat does this automatically).
 	return arr, nil
+}
+
+// buildConversationHistory turns the caller-supplied prior turns into a
+// Cursor ConversationHistory message. Returns nil when there is nothing to
+// send so single-turn callers stay wire-compatible.
+//
+// The mapping is deliberately minimal — Cursor's schema supports reasoning,
+// redacted-reasoning, tool calls, and image attachments per turn, but the
+// OpenAI/Anthropic proxy surface only exposes plain user/assistant text, so
+// each historical turn maps to a single text content block.
+func buildConversationHistory(turns []HistoryTurn) *cursorpb.AgentV1_ConversationHistory {
+	if len(turns) == 0 {
+		return nil
+	}
+	msgs := make([]*cursorpb.AgentV1_ConversationHistoryMessage, 0, len(turns))
+	for _, t := range turns {
+		if t.Content == "" {
+			continue
+		}
+		switch t.Role {
+		case "user":
+			userMsg := &cursorpb.AgentV1_ConversationHistoryUserMessage{
+				Content: []*cursorpb.AgentV1_ConversationHistoryUserContent{{
+					Content: &cursorpb.AgentV1_ConversationHistoryUserContent_Text{
+						Text: &cursorpb.AgentV1_ConversationHistoryTextContent{Text: t.Content},
+					},
+				}},
+			}
+			msgs = append(msgs, &cursorpb.AgentV1_ConversationHistoryMessage{
+				Message: &cursorpb.AgentV1_ConversationHistoryMessage_User{User: userMsg},
+			})
+		case "assistant":
+			asstMsg := &cursorpb.AgentV1_ConversationHistoryAssistantMessage{
+				Content: []*cursorpb.AgentV1_ConversationHistoryAssistantContent{{
+					Content: &cursorpb.AgentV1_ConversationHistoryAssistantContent_Text{
+						Text: &cursorpb.AgentV1_ConversationHistoryTextContent{Text: t.Content},
+					},
+				}},
+			}
+			msgs = append(msgs, &cursorpb.AgentV1_ConversationHistoryMessage{
+				Message: &cursorpb.AgentV1_ConversationHistoryMessage_Assistant{Assistant: asstMsg},
+			})
+		}
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	replace := true
+	return &cursorpb.AgentV1_ConversationHistory{
+		Messages: msgs,
+		// ReplaceUserInfo=true tells the server to trust the messages we ship
+		// instead of falling back to its own stored transcript. Without this
+		// flag Cursor's backend acknowledges the request but does not fold
+		// the history into the prompt fed to the model.
+		ReplaceUserInfo: &replace,
+	}
 }
 
 func ptr[T any](v T) *T { return &v }

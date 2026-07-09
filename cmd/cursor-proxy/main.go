@@ -135,31 +135,45 @@ func openaiChatHandler(c *executor.Client) http.HandlerFunc {
 			return
 		}
 
-		userText := ""
 		systemPrompt := ""
+		convTurns := make([]openaiMessage, 0, len(req.Messages))
 		for _, m := range req.Messages {
-			switch m.Role {
-			case "user":
-				if userText != "" {
-					userText += "\n"
-				}
-				userText += m.Content
-			case "system":
+			if m.Role == "system" {
 				if systemPrompt != "" {
 					systemPrompt += "\n"
 				}
 				systemPrompt += m.Content
+				continue
+			}
+			convTurns = append(convTurns, m)
+		}
+
+		lastUserIdx := -1
+		for i := len(convTurns) - 1; i >= 0; i-- {
+			if convTurns[i].Role == "user" {
+				lastUserIdx = i
+				break
 			}
 		}
-		if userText == "" {
+		if lastUserIdx < 0 {
 			http.Error(w, "no user message", 400)
 			return
+		}
+		userText := convTurns[lastUserIdx].Content
+		history := make([]executor.HistoryTurn, 0, lastUserIdx)
+		for _, m := range convTurns[:lastUserIdx] {
+			if m.Role != "user" && m.Role != "assistant" {
+				continue
+			}
+			history = append(history, executor.HistoryTurn{Role: m.Role, Content: m.Content})
 		}
 
 		events, err := c.RunChat(r.Context(), &executor.ChatRequest{
 			Model:             req.Model,
 			UserMessage:       userText,
 			SystemPrompt:      systemPrompt,
+			History:           history,
+			ConversationID:    r.Header.Get("x-conversation-id"),
 			PureMode:          true,
 			AutoStopOnTurnEnd: true,
 		})
@@ -257,24 +271,35 @@ func anthropicMessagesHandler(c *executor.Client) http.HandlerFunc {
 			return
 		}
 		systemPrompt := flattenAnthropicSystem(req.System)
-		userText := ""
-		for _, m := range req.Messages {
-			if m.Role == "user" {
-				if userText != "" {
-					userText += "\n"
-				}
-				userText += flattenAnthropicContent(m.Content)
+		lastUserIdx := -1
+		for i := len(req.Messages) - 1; i >= 0; i-- {
+			if req.Messages[i].Role == "user" {
+				lastUserIdx = i
+				break
 			}
 		}
-		if userText == "" {
+		if lastUserIdx < 0 {
 			http.Error(w, "no user message", 400)
 			return
+		}
+		userText := flattenAnthropicContent(req.Messages[lastUserIdx].Content)
+		history := make([]executor.HistoryTurn, 0, lastUserIdx)
+		for _, m := range req.Messages[:lastUserIdx] {
+			if m.Role != "user" && m.Role != "assistant" {
+				continue
+			}
+			history = append(history, executor.HistoryTurn{
+				Role:    m.Role,
+				Content: flattenAnthropicContent(m.Content),
+			})
 		}
 
 		events, err := c.RunChat(r.Context(), &executor.ChatRequest{
 			Model:             req.Model,
 			UserMessage:       userText,
 			SystemPrompt:      systemPrompt,
+			History:           history,
+			ConversationID:    r.Header.Get("x-conversation-id"),
 			PureMode:          true,
 			AutoStopOnTurnEnd: true,
 		})

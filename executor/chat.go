@@ -15,6 +15,14 @@ import (
 	cursorpb "github.com/router-for-me/cursor-proto/gen/cursor"
 )
 
+// HistoryTurn is a single prior turn in a multi-turn conversation. Only the
+// "user" and "assistant" roles are supported today; tool turns are omitted
+// because the executor does not yet drive Cursor's tool-call surface.
+type HistoryTurn struct {
+	Role    string // "user" | "assistant"
+	Content string
+}
+
 // ChatRequest carries the minimum parameters needed to start an agent run.
 type ChatRequest struct {
 	Model          string // e.g. "composer-2.5"
@@ -22,6 +30,12 @@ type ChatRequest struct {
 	ConversationID string // optional; auto-generated if empty
 	WorkspacePath  string // optional; default os.Getwd
 	Mode           uint32 // 1=ask, 3=agent  (default 3)
+
+	// History is the prior conversation, in chronological order. Everything
+	// before the current turn goes here; UserMessage remains the current
+	// turn's user text. Nil / empty History keeps the single-turn behaviour
+	// (nothing is added to UserMessageAction.ConversationHistory).
+	History []HistoryTurn
 
 	// SystemPrompt overrides Cursor's default coding-assistant prompt with
 	// your own. Populates AgentRunRequest.CustomSystemPrompt (field 8).
@@ -86,6 +100,17 @@ func (c *Client) RunChat(ctx context.Context, req *ChatRequest) (<-chan ChatEven
 	// because the model treats the leading block as high-priority instruction.
 	if req.SystemPrompt != "" {
 		req.UserMessage = spliceSystemPrompt(req.SystemPrompt, req.UserMessage)
+	}
+
+	// Cursor's backend accepts UserMessageAction.ConversationHistory on the
+	// wire but does not fold those messages into the prompt fed to the model
+	// (verified 2026-07-10 with composer-2.5 — the assistant continues to
+	// answer as if no prior turns existed). We keep populating that field for
+	// forward-compat but also splice the history in-band into the current
+	// user turn so the model actually sees it. This mirrors how SystemPrompt
+	// is handled above.
+	if len(req.History) > 0 {
+		req.UserMessage = spliceHistory(req.History, req.UserMessage)
 	}
 
 	// Build the full AgentRunRequest. The BidiAppend payload wraps it as
