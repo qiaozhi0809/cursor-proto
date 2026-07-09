@@ -21,11 +21,14 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 
 	"github.com/router-for-me/cursor-proto/auth"
 	"github.com/router-for-me/cursor-proto/executor"
+	"github.com/router-for-me/cursor-proto/executor/simcache"
 	"github.com/router-for-me/cursor-proto/translator"
 )
 
@@ -93,7 +96,19 @@ func main() {
 	apiKeysFlag := flag.String("api-keys", "", "comma-separated API keys required in Authorization: Bearer header; falls back to $"+apiKeysEnv+" when unset")
 	tokenFile := flag.String("token-file", "", "path to account JSON (overrides IDE SQLite lookup); "+
 		"env CURSOR_PROXY_ACCOUNT_FILE is used when this flag is empty")
+	simulateCache := flag.Bool("simulate-cache", true, "enable local prompt-cache simulator; env CURSOR_PROXY_SIMULATE_CACHE=false disables it")
+	cacheTTL := flag.String("cache-ttl", "10m", "simulator entry TTL (duration string)")
+	cacheSize := flag.Int("cache-size", 1000, "simulator max entries")
 	flag.Parse()
+
+	// Env override for the on/off toggle. Any value that parses as boolean is
+	// respected; an unparseable value falls back to the flag default so a
+	// typo doesn't silently disable the simulator.
+	if v := os.Getenv("CURSOR_PROXY_SIMULATE_CACHE"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			*simulateCache = b
+		}
+	}
 
 	tokenPath := *tokenFile
 	if tokenPath == "" {
@@ -116,6 +131,15 @@ func main() {
 
 	apiKeys := LoadAPIKeys(*apiKeysFlag)
 
+	var cacheStore *simcache.Store
+	if *simulateCache {
+		ttl := parseCacheTTL(*cacheTTL)
+		cacheStore = simcache.New(ttl, *cacheSize)
+		log.Printf("[proxy] sim-cache enabled: ttl=%s size=%d", ttl, *cacheSize)
+	} else {
+		log.Printf("[proxy] sim-cache disabled (real Cursor cache_read numbers pass through)")
+	}
+
 	log.Printf("[proxy] cursor account loaded: email=%s", acc.Email)
 	log.Printf("[proxy] listening on http://%s", *addr)
 	if len(apiKeys) > 0 {
@@ -128,8 +152,8 @@ func main() {
 	mux.HandleFunc("/v1/models", modelsHandler(c))
 	mux.HandleFunc("/v1/usage", usageHandler(c))
 	mux.HandleFunc("/v1/usage/prometheus", usagePrometheusHandler(c))
-	mux.HandleFunc("/v1/chat/completions", openaiChatHandler(c))
-	mux.HandleFunc("/v1/messages", anthropicMessagesHandler(c))
+	mux.HandleFunc("/v1/chat/completions", openaiChatHandler(c, cacheStore))
+	mux.HandleFunc("/v1/messages", anthropicMessagesHandler(c, cacheStore))
 
 	handler := RequireAPIKeys(apiKeys, mux)
 	log.Fatal(http.ListenAndServe(*addr, handler))
@@ -159,7 +183,7 @@ func modelsHandler(c *executor.Client) http.HandlerFunc {
 
 // ---------- /v1/chat/completions (OpenAI) ----------
 
-func openaiChatHandler(c *executor.Client) http.HandlerFunc {
+func openaiChatHandler(c *executor.Client, cacheStore *simcache.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req openaiChatRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -200,6 +224,11 @@ func openaiChatHandler(c *executor.Client) http.HandlerFunc {
 			history = append(history, executor.HistoryTurn{Role: m.Role, Content: m.Content})
 		}
 
+		// Ask the simulator whether it has seen this stable prefix before.
+		// The result is consulted after RunChat to rewrite `cached_tokens`.
+		prefix := prefixFromOpenAI(strings.TrimSpace(systemPrompt), history)
+		decision := decideSimCache(cacheStore, prefix)
+
 		tools := convertOpenAITools(req.Tools)
 		events, err := c.RunChat(r.Context(), &executor.ChatRequest{
 			Model:              req.Model,
@@ -218,11 +247,15 @@ func openaiChatHandler(c *executor.Client) http.HandlerFunc {
 		}
 
 		if req.Stream {
+			// Streaming responses commit headers before we can inspect the
+			// real cache_read from Cursor, so the header is set from the
+			// simulator's pre-stream view (real / simulated). See docs.
+			w.Header().Set("x-cursor-cache-source", decision.headerBeforeStream())
 			includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
-			streamOpenAI(w, req.Model, events, includeUsage)
+			streamOpenAI(w, req.Model, events, includeUsage, decision)
 			return
 		}
-		nonStreamOpenAI(w, req.Model, events)
+		nonStreamOpenAI(w, req.Model, events, decision)
 	}
 }
 
@@ -270,7 +303,7 @@ func convertAnthropicTools(in []anthropicTool) []executor.ToolDefinition {
 	return out
 }
 
-func streamOpenAI(w http.ResponseWriter, model string, events <-chan executor.ChatEvent, includeUsage bool) {
+func streamOpenAI(w http.ResponseWriter, model string, events <-chan executor.ChatEvent, includeUsage bool, decision simCacheDecision) {
 	w.Header().Set("content-type", "text/event-stream")
 	w.Header().Set("cache-control", "no-cache")
 	w.Header().Set("x-accel-buffering", "no")
@@ -310,6 +343,10 @@ func streamOpenAI(w http.ResponseWriter, model string, events <-chan executor.Ch
 			}
 		case translator.EventTurnEnded:
 			sawTurnEnd = true
+			// Rewrite usage before handing the event to the writer. Anthropic
+			// cache-creation marking is skipped here (OpenAI schema has no
+			// equivalent field).
+			decision.applyToUsage(trEv.Usage, false)
 			if payload := tr.Encode(trEv); len(payload) > 0 {
 				w.Write(payload)
 				if flusher != nil {
@@ -341,7 +378,7 @@ func streamOpenAI(w http.ResponseWriter, model string, events <-chan executor.Ch
 	}
 }
 
-func nonStreamOpenAI(w http.ResponseWriter, model string, events <-chan executor.ChatEvent) {
+func nonStreamOpenAI(w http.ResponseWriter, model string, events <-chan executor.ChatEvent, decision simCacheDecision) {
 	acc := translator.NonStreamingAccumulator{Model: model}
 	for ev := range events {
 		if ev.Server == nil {
@@ -363,6 +400,14 @@ func nonStreamOpenAI(w http.ResponseWriter, model string, events <-chan executor
 			acc.FinishStop = true
 		}
 	}
+	// Non-streaming: we can see Cursor's real cache_read before writing, so
+	// set the accurate three-state header (real / simulated / mixed).
+	var realCacheRead int64
+	if acc.Usage != nil {
+		realCacheRead = acc.Usage.CacheReadTokens
+	}
+	w.Header().Set("x-cursor-cache-source", decision.headerAfter(realCacheRead))
+	decision.applyToUsage(acc.Usage, false)
 	w.Header().Set("content-type", "application/json")
 	w.Write(acc.Response("chatcmpl-" + auth.GenerateSessionID()))
 }
@@ -379,7 +424,7 @@ func diffSuffix(sent, full string) string {
 
 // ---------- /v1/messages (Anthropic) ----------
 
-func anthropicMessagesHandler(c *executor.Client) http.HandlerFunc {
+func anthropicMessagesHandler(c *executor.Client, cacheStore *simcache.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req anthropicMessagesRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -410,6 +455,9 @@ func anthropicMessagesHandler(c *executor.Client) http.HandlerFunc {
 			})
 		}
 
+		prefix := prefixFromOpenAI(strings.TrimSpace(systemPrompt), history)
+		decision := decideSimCache(cacheStore, prefix)
+
 		tools := convertAnthropicTools(req.Tools)
 		events, err := c.RunChat(r.Context(), &executor.ChatRequest{
 			Model:              req.Model,
@@ -428,14 +476,15 @@ func anthropicMessagesHandler(c *executor.Client) http.HandlerFunc {
 		}
 
 		if req.Stream {
-			streamAnthropic(w, req.Model, events)
+			w.Header().Set("x-cursor-cache-source", decision.headerBeforeStream())
+			streamAnthropic(w, req.Model, events, decision)
 			return
 		}
-		nonStreamAnthropic(w, req.Model, events)
+		nonStreamAnthropic(w, req.Model, events, decision)
 	}
 }
 
-func streamAnthropic(w http.ResponseWriter, model string, events <-chan executor.ChatEvent) {
+func streamAnthropic(w http.ResponseWriter, model string, events <-chan executor.ChatEvent, decision simCacheDecision) {
 	w.Header().Set("content-type", "text/event-stream")
 	w.Header().Set("cache-control", "no-cache")
 	w.Header().Set("x-accel-buffering", "no")
@@ -475,6 +524,10 @@ func streamAnthropic(w http.ResponseWriter, model string, events <-chan executor
 			lastUsage = trEv.Usage
 		}
 	}
+	// Anthropic streaming: on a miss, advertise cache_creation_input_tokens
+	// so the Anthropic-style prompt-cache lifecycle is visible. On a hit,
+	// rewrite cache_read_input_tokens to max(real, simulated).
+	decision.applyToUsage(lastUsage, true)
 	end := &translator.Event{Kind: translator.EventTurnEnded, Usage: lastUsage}
 	w.Write(tr.Encode(end))
 	if flusher != nil {
@@ -482,7 +535,7 @@ func streamAnthropic(w http.ResponseWriter, model string, events <-chan executor
 	}
 }
 
-func nonStreamAnthropic(w http.ResponseWriter, model string, events <-chan executor.ChatEvent) {
+func nonStreamAnthropic(w http.ResponseWriter, model string, events <-chan executor.ChatEvent, decision simCacheDecision) {
 	assistantText := ""
 	var usage *translator.Usage
 	var toolUses []map[string]any
@@ -528,6 +581,12 @@ func nonStreamAnthropic(w http.ResponseWriter, model string, events <-chan execu
 	if len(toolUses) > 0 {
 		stopReason = "tool_use"
 	}
+	var realCacheRead int64
+	if usage != nil {
+		realCacheRead = usage.CacheReadTokens
+	}
+	w.Header().Set("x-cursor-cache-source", decision.headerAfter(realCacheRead))
+	decision.applyToUsage(usage, true)
 	resp := map[string]any{
 		"id":            "msg_" + auth.GenerateSessionID(),
 		"type":          "message",
