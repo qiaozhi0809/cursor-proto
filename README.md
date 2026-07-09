@@ -140,7 +140,7 @@ Every outbound request:                            x-cursor-checksum: <derived>
 | 5 | Executor (chat / agent RunSSE + BidiAppend) | ✅ end-to-end AI reply |
 | 6 | Translator (OpenAI + Anthropic SSE) | ✅ HTTP proxy live |
 | 7-A | MCP tools (tools[] → tool_calls) | ✅ `get_weather(Paris)` round-trips |
-| 7-B | Real per-token streaming | ⚠️ not feasible (see `docs/phase-7b-streaming.md`) |
+| 7-B | SSE streaming | ✅ standard OpenAI/Anthropic SSE; per-token pacing not available (server-side limit — see [Streaming section](#streaming--what-it-is-and-isnt)) |
 | 7-C | API key auth middleware | ✅ constant-time compare, env + flag |
 | 7-D | Multi-turn conversation | ✅ "Remember 42" test passes |
 | 7-E | Docker + CI + release workflow | ✅ Dockerfile + 2 GHA workflows |
@@ -248,6 +248,64 @@ that's an account-scoped restriction the proxy can't work around — you need
 an account whose registered country permits the model (typical fix: sign up
 with a US billing method and IP). There's no protocol issue on our side;
 error responses pass straight through to the client.
+
+## Streaming — what it is and isn't
+
+**Yes, the proxy supports streaming.** Requests with `"stream": true` return
+proper Server-Sent Events (`text/event-stream`, `data: {...}\n\n` frames,
+terminating `data: [DONE]`), fully compatible with OpenAI Chat Completion
+and Anthropic Messages clients out of the box. `stream_options.include_usage`
+is honoured on the OpenAI side and produces a final usage-only chunk before
+`[DONE]`.
+
+**What is not available is *per-token* streaming** (the "typewriter"
+animation). Cursor's own `agent.v1/RunSSE` protocol emits the assistant's
+final answer as a **single blob at the end of the turn**, not token by
+token — we ship that blob as one `content` delta and close the stream.
+
+Empirically confirmed:
+
+- All legacy `aiserver.v1.ChatService/Stream*` methods have been sunset for
+  3.10 clients (they return `Update Required` or 404). See
+  `docs/phase-7m-legacy-streaming.md`. There is no alternative endpoint
+  that delivers dense per-token deltas.
+- The current path emits: 1 role frame → 1 content frame (the full answer)
+  → 1 finish frame → `[DONE]`. Total: 3 SSE data frames per turn, all
+  arriving within the same ~100ms window at end-of-turn.
+
+**If you want typewriter animation, do it in your client** — receive the
+full content chunk, then render one character at a time locally. The proxy
+deliberately does not fake per-token pacing (that would only add latency,
+not information).
+
+## Prompt caching
+
+Cursor's server auto-caches the model's system prompt (typically
+~4675 tokens for `composer-2.5`) and reports the counter in every response.
+The proxy forwards it in the standard OpenAI / Anthropic usage shape:
+
+```jsonc
+// OpenAI /v1/chat/completions
+"usage": {
+  "prompt_tokens": 13080,
+  "completion_tokens": 215,
+  "total_tokens": 13295,
+  "prompt_tokens_details":  { "cached_tokens": 4675 },
+  "completion_tokens_details": { "reasoning_tokens": 0 }
+}
+
+// Anthropic /v1/messages
+"usage": {
+  "input_tokens": 8405,              // total_input − cache_read
+  "output_tokens": 115,
+  "cache_read_input_tokens": 4675,
+  "cache_creation_input_tokens": 0   // Cursor doesn't accept client-side writes
+}
+```
+
+Client-side prompt caching (Anthropic-style `cache_control: ephemeral`) is
+**not supported** — Cursor's server ignores that field. Whatever cache we
+report is what Cursor's own cache layer produced.
 
 ## Non-obvious findings
 
