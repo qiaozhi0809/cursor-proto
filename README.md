@@ -96,18 +96,31 @@ Endpoints exposed by `cursor-proxy`:
 
 ## Which models work?
 
-Cursor gates model access by region. As of 2026-07-10 (China Mainland IP):
+`GET /v1/models` always returns the full catalog Cursor advertises (156 models
+at the time of writing). Whether a *specific* model is actually callable is
+**decided per-account**, not per-project or per-IP.
 
-| Model family | Works? |
+Cursor stores a `country` field on every user account (queryable via
+`DashboardService/GetMe`, e.g. our test account shows `country: "CN"`). Some
+model providers (notably Anthropic Claude and the Claude Fable family) refuse
+to serve accounts whose country code is on a restricted list — **regardless
+of the IP the request comes from**. Routing traffic through an out-of-region
+SOCKS5 proxy does NOT unlock these models; verified empirically by connecting
+from a US residential IP (Charter/Comcast/RCN) and still getting
+`"Model not available: This model provider is not supported in your region"`.
+
+What this means:
+
+| Account country | Behaviour |
 |---|---|
-| `composer-2.5`, `composer-2.5-fast` | ✅ |
-| `grok-4.5-*` | ✅ |
-| `gpt-5.5-*` | ⚠️ mixed |
-| `default` | ✅ (uses your default in Cursor settings) |
-| `claude-opus-4-8-*`, `claude-fable-5-*` | ❌ "This model provider is not supported in your region" |
+| US / EU / other permitted | All 156 models callable |
+| CN / other restricted | `composer-2.5*`, `grok-4.5*`, `gpt-5.5*`, `default` work; `claude-*` and `claude-fable-*` return the region error |
 
-`GET /v1/models` returns all 156 models the server advertises, but only a
-subset are actually callable from any given IP.
+If a call fails with `"This model provider is not supported in your region"`,
+that's an account-scoped restriction the proxy can't work around — you need
+an account whose registered country permits the model (typical fix: sign up
+with a US billing method and IP). There's no protocol issue on our side;
+error responses pass straight through to the client.
 
 ## Non-obvious findings
 
