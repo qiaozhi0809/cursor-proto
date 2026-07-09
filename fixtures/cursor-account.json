@@ -1,0 +1,12 @@
+{
+  "email": "phase7f@example.com",
+  "user_id": "user_01KX3G01P34XHA85JW68Z9ES36",
+  "access_token": "test-access-token-abcdef0123456789",
+  "refresh_token": "test-refresh-token-abcdef0123456789",
+  "auth_id": "auth0|user_01KX3G01P34XHA85JW68Z9ES36",
+  "auth_type": "Auth_0",
+  "issued_at": "2025-06-01T00:00:00Z",
+  "expires_at": "2026-06-01T00:00:00Z",
+  "machine_id": "abc123def456abc123def456abc123def456abc123def456abc123def456abcd",
+  "mac_machine_id": "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+}

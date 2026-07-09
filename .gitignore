@@ -28,6 +28,12 @@ __pycache__/
 bin/
 vendor/
 
+# Compiled CPA plugin shared library and its generated C header.
+plugin/cursor/cursor.so
+plugin/cursor/cursor.dylib
+plugin/cursor/cursor.h
+plugin/cursor/cursor.dll
+
 # ============================================================================
 # Big binary reference material (keep locally, don't push)
 # ============================================================================
