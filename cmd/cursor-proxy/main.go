@@ -96,6 +96,8 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", modelsHandler(c))
+	mux.HandleFunc("/v1/usage", usageHandler(c))
+	mux.HandleFunc("/v1/usage/prometheus", usagePrometheusHandler(c))
 	mux.HandleFunc("/v1/chat/completions", openaiChatHandler(c))
 	mux.HandleFunc("/v1/messages", anthropicMessagesHandler(c))
 
