@@ -92,3 +92,163 @@ func TestFromServerMessageNil(t *testing.T) {
 		t.Error("nil input should map to nil event")
 	}
 }
+
+// TestOpenAINonStreamingCacheUsage verifies that cache_read_tokens and
+// reasoning_tokens surface in the OpenAI non-streaming response under the
+// prompt_tokens_details / completion_tokens_details keys, and that
+// total_tokens = prompt + completion.
+func TestOpenAINonStreamingCacheUsage(t *testing.T) {
+	a := NonStreamingAccumulator{Model: "composer-2.5"}
+	a.Consume(&Event{Kind: EventTextDelta, Text: "hello"})
+	a.Consume(&Event{Kind: EventTurnEnded, Usage: &Usage{
+		InputTokens:     100,
+		OutputTokens:    50,
+		CacheReadTokens: 60,
+		ReasoningTokens: 5,
+	}})
+
+	body := a.Response("chatcmpl-test")
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	usage, ok := got["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing usage: %s", body)
+	}
+	if v, _ := usage["total_tokens"].(float64); v != 150 {
+		t.Errorf("total_tokens = %v, want 150", usage["total_tokens"])
+	}
+	if v, _ := usage["prompt_tokens"].(float64); v != 100 {
+		t.Errorf("prompt_tokens = %v, want 100", usage["prompt_tokens"])
+	}
+	if v, _ := usage["completion_tokens"].(float64); v != 50 {
+		t.Errorf("completion_tokens = %v, want 50", usage["completion_tokens"])
+	}
+	pdet, ok := usage["prompt_tokens_details"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing prompt_tokens_details: %s", body)
+	}
+	if v, _ := pdet["cached_tokens"].(float64); v != 60 {
+		t.Errorf("prompt_tokens_details.cached_tokens = %v, want 60", pdet["cached_tokens"])
+	}
+	cdet, ok := usage["completion_tokens_details"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing completion_tokens_details: %s", body)
+	}
+	if v, _ := cdet["reasoning_tokens"].(float64); v != 5 {
+		t.Errorf("completion_tokens_details.reasoning_tokens = %v, want 5", cdet["reasoning_tokens"])
+	}
+}
+
+// TestOpenAIStreamingIncludeUsageFinalFrame verifies that when
+// IncludeUsage=true, FinalUsageFrame emits a chunk with empty choices and a
+// usage block carrying the cache/reasoning breakdown from the last turn_ended.
+func TestOpenAIStreamingIncludeUsageFinalFrame(t *testing.T) {
+	w := NewOpenAIStreamWriter("composer-2.5")
+	w.IncludeUsage = true
+	_ = w.Encode(&Event{Kind: EventTextDelta, Text: "hi"})
+	_ = w.Encode(&Event{Kind: EventTurnEnded, Usage: &Usage{
+		InputTokens:     100,
+		OutputTokens:    50,
+		CacheReadTokens: 60,
+		ReasoningTokens: 5,
+	}})
+	frame := string(w.FinalUsageFrame())
+	if frame == "" {
+		t.Fatal("FinalUsageFrame returned empty")
+	}
+	if !strings.HasPrefix(frame, "data: ") {
+		t.Errorf("frame not SSE: %s", frame)
+	}
+	// Strip "data: " prefix and trailing \n\n; parse JSON.
+	trimmed := strings.TrimPrefix(frame, "data: ")
+	trimmed = strings.TrimSuffix(trimmed, "\n\n")
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		t.Fatalf("payload not JSON: %v (%s)", err, trimmed)
+	}
+	choices, _ := payload["choices"].([]any)
+	if len(choices) != 0 {
+		t.Errorf("final usage frame choices must be empty, got %v", choices)
+	}
+	usage, ok := payload["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing usage in final frame: %s", trimmed)
+	}
+	if v, _ := usage["total_tokens"].(float64); v != 150 {
+		t.Errorf("total_tokens = %v, want 150", usage["total_tokens"])
+	}
+	pdet, _ := usage["prompt_tokens_details"].(map[string]any)
+	if v, _ := pdet["cached_tokens"].(float64); v != 60 {
+		t.Errorf("cached_tokens = %v, want 60", pdet["cached_tokens"])
+	}
+	cdet, _ := usage["completion_tokens_details"].(map[string]any)
+	if v, _ := cdet["reasoning_tokens"].(float64); v != 5 {
+		t.Errorf("reasoning_tokens = %v, want 5", cdet["reasoning_tokens"])
+	}
+}
+
+// TestOpenAIStreamingIncludeUsageOptOut verifies that FinalUsageFrame stays
+// silent when the client didn't opt in via stream_options.include_usage.
+func TestOpenAIStreamingIncludeUsageOptOut(t *testing.T) {
+	w := NewOpenAIStreamWriter("composer-2.5")
+	_ = w.Encode(&Event{Kind: EventTextDelta, Text: "hi"})
+	_ = w.Encode(&Event{Kind: EventTurnEnded, Usage: &Usage{InputTokens: 10, OutputTokens: 5, CacheReadTokens: 3}})
+	if got := w.FinalUsageFrame(); len(got) != 0 {
+		t.Errorf("FinalUsageFrame with IncludeUsage=false should be empty; got %q", got)
+	}
+}
+
+// TestAnthropicNonStreamingCacheUsage covers BuildAnthropicUsage: input_tokens
+// is total input minus cache_read (never <0); cache_read_input_tokens and
+// cache_creation_input_tokens both appear in the object.
+func TestAnthropicNonStreamingCacheUsage(t *testing.T) {
+	u := &Usage{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 60, CacheWriteTokens: 0}
+	got := BuildAnthropicUsage(u)
+	if v, _ := got["input_tokens"].(int64); v != 40 {
+		t.Errorf("input_tokens = %v, want 40 (100-60)", got["input_tokens"])
+	}
+	if v, _ := got["output_tokens"].(int64); v != 50 {
+		t.Errorf("output_tokens = %v, want 50", got["output_tokens"])
+	}
+	if v, _ := got["cache_read_input_tokens"].(int64); v != 60 {
+		t.Errorf("cache_read_input_tokens = %v, want 60", got["cache_read_input_tokens"])
+	}
+	if v, _ := got["cache_creation_input_tokens"].(int64); v != 0 {
+		t.Errorf("cache_creation_input_tokens = %v, want 0", got["cache_creation_input_tokens"])
+	}
+
+	// Boundary: cache read greater than total input clamps to 0.
+	got = BuildAnthropicUsage(&Usage{InputTokens: 10, OutputTokens: 3, CacheReadTokens: 999})
+	if v, _ := got["input_tokens"].(int64); v != 0 {
+		t.Errorf("clamp: input_tokens = %v, want 0", got["input_tokens"])
+	}
+}
+
+// TestAnthropicStreamingMessageDeltaCache verifies the message_delta event
+// on the streaming Anthropic path carries cache_read_input_tokens and
+// cache_creation_input_tokens alongside input/output.
+func TestAnthropicStreamingMessageDeltaCache(t *testing.T) {
+	w := NewAnthropicStreamWriter("claude-opus-4")
+	_ = w.Encode(&Event{Kind: EventTextDelta, Text: "hi"})
+	end := string(w.Encode(&Event{Kind: EventTurnEnded, Usage: &Usage{
+		InputTokens:      100,
+		OutputTokens:     50,
+		CacheReadTokens:  60,
+		CacheWriteTokens: 0,
+	}}))
+	if !strings.Contains(end, `"cache_read_input_tokens":60`) {
+		t.Errorf("missing cache_read_input_tokens=60:\n%s", end)
+	}
+	if !strings.Contains(end, `"cache_creation_input_tokens":0`) {
+		t.Errorf("missing cache_creation_input_tokens=0:\n%s", end)
+	}
+	// input_tokens should be 40 (100 total minus 60 cached).
+	if !strings.Contains(end, `"input_tokens":40`) {
+		t.Errorf("missing input_tokens=40 after cache subtract:\n%s", end)
+	}
+	if !strings.Contains(end, `"output_tokens":50`) {
+		t.Errorf("missing output_tokens=50:\n%s", end)
+	}
+}

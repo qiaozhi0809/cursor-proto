@@ -30,11 +30,11 @@ import (
 //	event: message_stop
 //	data: {}
 type AnthropicStreamWriter struct {
-	Model       string
-	ID          string
-	blockOpen   bool
-	blockIndex  int
-	sentStart   bool
+	Model      string
+	ID         string
+	blockOpen  bool
+	blockIndex int
+	sentStart  bool
 	// toolBlocks maps tool_call_id -> block index for its content_block.
 	toolBlocks  map[string]int
 	sawToolCall bool
@@ -204,14 +204,7 @@ func (w *AnthropicStreamWriter) Encode(ev *Event) []byte {
 		w.toolBlocks = nil
 		usage := map[string]any{"output_tokens": 0}
 		if ev.Usage != nil {
-			usage["input_tokens"] = ev.Usage.InputTokens
-			usage["output_tokens"] = ev.Usage.OutputTokens
-			if ev.Usage.CacheReadTokens > 0 {
-				usage["cache_read_input_tokens"] = ev.Usage.CacheReadTokens
-			}
-			if ev.Usage.CacheWriteTokens > 0 {
-				usage["cache_creation_input_tokens"] = ev.Usage.CacheWriteTokens
-			}
+			usage = BuildAnthropicUsage(ev.Usage)
 		}
 		stopReason := "end_turn"
 		if w.sawToolCall {
@@ -236,4 +229,35 @@ func (w *AnthropicStreamWriter) Encode(ev *Event) []byte {
 func (w *AnthropicStreamWriter) frame(event string, data map[string]any) []byte {
 	b, _ := json.Marshal(data)
 	return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", event, string(b)))
+}
+
+// BuildAnthropicUsage renders a translator.Usage as an Anthropic-shaped
+// `usage` object.
+//
+// Anthropic's `input_tokens` counter reports the number of NON-cached input
+// tokens (that's how they price the reads separately). Cursor's TurnEnded
+// reports the pre-subtraction total, so we subtract cache_read_tokens before
+// exposing it. Never fall below 0.
+//
+// cache_read_input_tokens / cache_creation_input_tokens are always emitted
+// (as 0 when unset) so downstream clients can rely on a stable shape.
+func BuildAnthropicUsage(u *Usage) map[string]any {
+	if u == nil {
+		return map[string]any{
+			"input_tokens":                0,
+			"output_tokens":               0,
+			"cache_read_input_tokens":     0,
+			"cache_creation_input_tokens": 0,
+		}
+	}
+	input := u.InputTokens - u.CacheReadTokens
+	if input < 0 {
+		input = 0
+	}
+	return map[string]any{
+		"input_tokens":                input,
+		"output_tokens":               u.OutputTokens,
+		"cache_read_input_tokens":     u.CacheReadTokens,
+		"cache_creation_input_tokens": u.CacheWriteTokens,
+	}
 }
