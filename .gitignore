@@ -1,20 +1,43 @@
-# 大文件与二进制样本
-captures/*.js
+# ============================================================================
+# CRITICAL — never commit
+# ============================================================================
+# Any real API traffic capture (contains Authorization Bearer tokens)
+captures/traffic/
 captures/*.har
-captures/*.pcap
-captures/*.bin
-captures/*.raw
 
-# token / 敏感文件
+# Cursor tokens
+.cursor-token
+*.token
 *.cursor-token
-.env
-*.pem
-*.key
 
-# Go 产物
-*.pb.go
+# Environment
+.env
+.env.*
+
+# ============================================================================
+# Build artefacts
+# ============================================================================
+*.pb.go.bak
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Go
+bin/
 vendor/
 
-# 开发临时
-tmp/
+# ============================================================================
+# Big binary reference material (keep locally, don't push)
+# ============================================================================
+captures/wb-*.js         # 40 MB Cursor.app JS bundle
+captures/wb-*.js.gz
+
+# ============================================================================
+# OS junk
+# ============================================================================
 .DS_Store
+*.swp
+*.swo
+Thumbs.db
