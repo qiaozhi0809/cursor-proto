@@ -60,21 +60,30 @@ type anthropicMessage struct {
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8317", "listen address")
+	apiKeysFlag := flag.String("api-keys", "", "comma-separated API keys required in Authorization: Bearer header; falls back to $"+apiKeysEnv+" when unset")
 	flag.Parse()
 
 	acc := loadAccountFromIDE()
 	c := executor.NewClient(acc)
 	c.API3 = c.API2 // chat also lives on api2
 
+	apiKeys := LoadAPIKeys(*apiKeysFlag)
+
 	log.Printf("[proxy] cursor account loaded: email=%s", acc.Email)
 	log.Printf("[proxy] listening on http://%s", *addr)
+	if len(apiKeys) > 0 {
+		log.Printf("[proxy] api-key auth enabled: %d key(s) configured", len(apiKeys))
+	} else {
+		log.Printf("[proxy] api-key auth disabled (set -api-keys or $%s to enable)", apiKeysEnv)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", modelsHandler(c))
 	mux.HandleFunc("/v1/chat/completions", openaiChatHandler(c))
 	mux.HandleFunc("/v1/messages", anthropicMessagesHandler(c))
 
-	log.Fatal(http.ListenAndServe(*addr, mux))
+	handler := RequireAPIKeys(apiKeys, mux)
+	log.Fatal(http.ListenAndServe(*addr, handler))
 }
 
 // ---------- /v1/models ----------
