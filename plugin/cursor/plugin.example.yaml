@@ -1,0 +1,27 @@
+# Cursor plugin snippet for CLIProxyAPI's config.yaml.
+#
+# Paste the two sections below into the CPA config file, adjusting
+# `dir` and the plugin file name for your OS (`.so` on Linux,
+# `.dylib` on macOS). Cursor auth JSON files converted by
+# `cursor-to-cpa` should live under CPA's auth directory (default
+# `~/.cli-proxy-api/`) so the plugin can pick them up via
+# `auth.parse`.
+
+plugins:
+  enabled: true
+  dir: "plugins"       # directory that contains cursor.so / cursor.dylib
+  configs:
+    cursor:
+      enabled: true
+      priority: 5
+      # Optional operator knobs consumed by the plugin at runtime.
+      # (No plugin-owned config fields are declared yet in
+      # plugin.register.ConfigFields, so nothing else is required.)
+
+# Example: after running
+#   cursor-to-cpa -in ./account.json
+# a file such as
+#   ~/.cli-proxy-api/cursor-you_at_example.com.json
+# will exist; on next start CPA's file synthesizer hands its raw
+# JSON to the plugin's auth.parse, which returns an Auth record
+# tagged provider="cursor".
