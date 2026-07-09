@@ -1,0 +1,34 @@
+cursor-proto
+Copyright 2026 greenSheep999
+
+This product includes software developed by third parties, listed below.
+
+---
+
+reference/ — read-only reference material
+
+    The JavaScript files under reference/js-src/ are a snapshot of
+    CursorGateway (https://github.com/taxue2016/CursorGateway) used
+    during reverse engineering.
+
+    CursorGateway is licensed under the MIT License.
+
+    Copyright (c) 2026 taxue2016 and CursorGateway contributors
+
+    None of the Go code in this repository is a direct port of
+    CursorGateway. The JS files are retained for cross-reference only.
+
+---
+
+captures/schema-3.10.20.raw.json, proto/cursor.proto — schema derived from
+Cursor.app 3.10.20's public JS bundle.
+
+    Cursor is a product of Anysphere Inc. This repository claims no
+    ownership of Cursor's proprietary APIs, brands, or protocol
+    definitions. The extracted schema is provided for interoperability
+    research only.
+
+---
+
+Third-party Go dependencies are listed in go.mod and each retains its own
+license.

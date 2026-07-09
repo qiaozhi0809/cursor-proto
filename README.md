@@ -339,15 +339,46 @@ Prebuilt binaries are published from tag pushes (`v*.*.*`) via
 The release workflow does not push a Docker image yet — that is a future
 improvement.
 
-## Warning
+## Legal & disclaimer
 
-This is reverse-engineered code. Cursor's Terms of Service explicitly prohibit
-programmatic access outside their sanctioned CLI. Use only for personal
-research, keep the repository private, and expect the protocol to shift under
-you — bumping to a new Cursor release usually requires updating headers,
-release hash, and proto schema (see the last section).
+**This is reverse-engineered code for interoperability research.** The
+protocol schemas, header set, checksum algorithm, and machine-id derivation
+in this repository were recovered from Cursor's own publicly-shipped JS
+bundle (`workbench.desktop.main.js`) using standard reverse-engineering
+techniques.
+
+- **Cursor** is a product of Anysphere Inc. This project has no affiliation
+  with, endorsement from, or connection to Anysphere or the Cursor brand.
+- Using this project to access Cursor's servers may violate the current
+  **Cursor Terms of Service**. The maintainers of this project are not
+  lawyers and make no representation about the legality of any specific use
+  in your jurisdiction. **You are responsible for reading Cursor's ToS and
+  applicable regulations before running this code against Cursor's
+  production infrastructure.**
+- No warranty. Provided **AS IS**. The protocol is a moving target — any
+  Cursor release can rename fields, add required headers, or rotate the
+  release hash and break this code without notice. Expect maintenance.
+- Do not use this project to redistribute Cursor's model responses at scale,
+  bypass paid tiers you have not purchased, or otherwise attempt to defraud
+  Cursor. The point of the code is portability and observability, not
+  freeloading.
 
 ## License
 
-Not yet decided. Everything under `reference/` retains its upstream license
-(CursorGateway's MIT). Everything else is currently unlicensed and private.
+Licensed under the **Apache License, Version 2.0** — see [LICENSE](LICENSE).
+
+Apache-2.0 was chosen over MIT for the explicit patent grant. If you find
+this project useful, or fork it, keep the [NOTICE](NOTICE) file intact and
+credit the upstream reference material.
+
+Third-party attributions:
+
+- `reference/js-src/` — snapshots of
+  [CursorGateway](https://github.com/taxue2016/CursorGateway) (MIT), retained
+  as read-only cross-reference during reverse engineering. **No Go code in
+  this repository is a direct port of CursorGateway.**
+- `captures/`, `proto/cursor.proto` — schema derived from Cursor.app's
+  public JS bundle. Cursor and Anysphere retain all rights to their APIs
+  and brand.
+
+Full attributions in [NOTICE](NOTICE).
