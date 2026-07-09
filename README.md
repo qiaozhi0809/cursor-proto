@@ -59,6 +59,11 @@ CGO_ENABLED=1 go build -o cursor-proxy ./cmd/cursor-proxy
 # 2. Start it (reads your Cursor IDE token automatically on macOS)
 ./cursor-proxy -addr 127.0.0.1:8317
 
+# With API key protection
+CURSOR_PROXY_API_KEYS=sk-mypersonalkey ./cursor-proxy -addr 127.0.0.1:8317
+curl -H "Authorization: Bearer sk-mypersonalkey" http://127.0.0.1:8317/v1/models
+# (equivalent flag form: ./cursor-proxy -addr 127.0.0.1:8317 -api-keys sk-mypersonalkey,sk-second)
+
 # 3. Talk to it with any OpenAI client
 curl -N http://127.0.0.1:8317/v1/chat/completions \
   -H "content-type: application/json" \
