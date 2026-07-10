@@ -19,11 +19,19 @@ import (
 	"github.com/router-for-me/cursor-proto/sdk/cpaformat"
 )
 
-// managementBasePath is the CPA prefix under which every plugin
-// management route sits. Kept in sync with pluginhost/management.go.
+// managementBasePath is the CPA prefix under which plugin-owned
+// management routes historically sit. Kept in sync with
+// pluginhost/management.go.
 const managementBasePath = "/v0/management"
 
-// routePrefix is our slice of the management namespace. Every route
+// resourceBasePath is the CPA prefix under which plugin-owned menu
+// resources live. When a plugin route declares a Menu label CPA
+// promotes it to a resource route and the eventual request URL sits
+// under /v0/resource/plugins/<pluginID>/... rather than
+// /v0/management/... .
+const resourceBasePath = "/v0/resource/plugins/cursor"
+
+// routePrefix is our slice of the plugin's namespace. Every route
 // this plugin declares lives under it so a single lookup can decide
 // whether to hand the request to us.
 const routePrefix = "/cli-proxy-api/cursor"
@@ -114,11 +122,23 @@ func handleManagement(payload []byte) ([]byte, int) {
 // URL to exactly the paths we declared).
 func routeManagement(ctx context.Context, req managementRequest) managementResponse {
 	path := strings.TrimSuffix(req.Path, "/")
-	// The pluginhost rewrites relative paths, but we normalise defensively.
-	if !strings.HasPrefix(path, managementBasePath) {
-		path = managementBasePath + strings.TrimPrefix(path, "/")
+	// The pluginhost forwards requests under either /v0/management/... or
+	// /v0/resource/plugins/cursor/... depending on whether the route
+	// declared a Menu label (Menu-bearing routes are promoted to resource
+	// routes). Strip whichever host prefix we see so downstream matching
+	// works on the plugin-local suffix.
+	switch {
+	case strings.HasPrefix(path, resourceBasePath):
+		path = strings.TrimPrefix(path, resourceBasePath)
+	case strings.HasPrefix(path, managementBasePath):
+		path = strings.TrimPrefix(path, managementBasePath)
+	default:
+		// Defensive: some hosts may hand us a relative path.
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
 	}
-	suffix := strings.TrimPrefix(path, managementBasePath)
+	suffix := path
 	if strings.HasPrefix(suffix, routePrefix) {
 		suffix = strings.TrimPrefix(suffix, routePrefix)
 	}
@@ -140,7 +160,7 @@ func routeManagement(ctx context.Context, req managementRequest) managementRespo
 		return handlePoolSummary(ctx)
 	default:
 		return jsonErrorResponse(http.StatusNotFound, "unknown_route",
-			fmt.Sprintf("no cursor plugin route for %s %s", method, path))
+			fmt.Sprintf("no cursor plugin route for %s %s (suffix=%q)", method, req.Path, suffix))
 	}
 }
 

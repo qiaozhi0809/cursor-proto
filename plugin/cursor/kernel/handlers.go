@@ -23,7 +23,7 @@ func registerResult() string {
 			"Name":             "cursor",
 			"Version":          "0.1.0",
 			"Author":           "router-for-me",
-			"GitHubRepository": "https://github.com/router-for-me/cursor-proto",
+			"GitHubRepository": "https://github.com/greenSheep999/cursor-proto",
 			"Logo":             logoDataURI,
 			"ConfigFields":     []any{},
 		},
