@@ -11,9 +11,11 @@ import (
 // UI can render the plugin card without depending on an external
 // image host.
 //
-// The PNG is a 108x108 square (fits the UI's square logo slots
-// without stretching), whereas the earlier SVG used a 49x56 viewBox
-// that skewed inside those slots.
+// The PNG is a 180x180 square with the Cursor mark centred and
+// 20% transparent padding on every side, so it drops into the UI's
+// square logo slots without stretching or crowding the container
+// edges. Fits neatly under CSS backgrounds that draw their own
+// rounded chip / border.
 //
 //go:embed assets/logo.png
 var logoPNG []byte
