@@ -24,7 +24,7 @@ func registerResult() string {
 			"Version":          "0.1.0",
 			"Author":           "router-for-me",
 			"GitHubRepository": "https://github.com/router-for-me/cursor-proto",
-			"Logo":             "",
+			"Logo":             "https://cursor.com/apple-touch-icon.png",
 			"ConfigFields":     []any{},
 		},
 		"capabilities": map[string]any{
