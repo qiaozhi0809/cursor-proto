@@ -334,6 +334,17 @@ func streamOpenAI(w http.ResponseWriter, model string, events <-chan executor.Ch
 			continue
 		}
 		switch trEv.Kind {
+		case translator.EventTextDelta:
+			if trEv.Text == "" {
+				continue
+			}
+			assistantSent += trEv.Text
+			if payload := tr.Encode(trEv); len(payload) > 0 {
+				w.Write(payload)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
 		case translator.EventToolCallStarted, translator.EventToolCallDelta:
 			if payload := tr.Encode(trEv); len(payload) > 0 {
 				w.Write(payload)
@@ -380,6 +391,7 @@ func streamOpenAI(w http.ResponseWriter, model string, events <-chan executor.Ch
 
 func nonStreamOpenAI(w http.ResponseWriter, model string, events <-chan executor.ChatEvent, decision simCacheDecision) {
 	acc := translator.NonStreamingAccumulator{Model: model}
+	textDelta := ""
 	for ev := range events {
 		if ev.Server == nil {
 			continue
@@ -393,12 +405,17 @@ func nonStreamOpenAI(w http.ResponseWriter, model string, events <-chan executor
 			continue
 		}
 		switch trEv.Kind {
+		case translator.EventTextDelta:
+			textDelta += trEv.Text
 		case translator.EventToolCallStarted:
 			acc.Consume(trEv)
 		case translator.EventTurnEnded:
 			acc.Usage = trEv.Usage
 			acc.FinishStop = true
 		}
+	}
+	if acc.Text == "" && textDelta != "" {
+		acc.Text = textDelta
 	}
 	// Non-streaming: we can see Cursor's real cache_read before writing, so
 	// set the accurate three-state header (real / simulated / mixed).
@@ -513,6 +530,17 @@ func streamAnthropic(w http.ResponseWriter, model string, events <-chan executor
 			continue
 		}
 		switch trEv.Kind {
+		case translator.EventTextDelta:
+			if trEv.Text == "" {
+				continue
+			}
+			assistantSent += trEv.Text
+			if payload := tr.Encode(trEv); len(payload) > 0 {
+				w.Write(payload)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
 		case translator.EventToolCallStarted, translator.EventToolCallDelta, translator.EventToolCallCompleted:
 			if payload := tr.Encode(trEv); len(payload) > 0 {
 				w.Write(payload)
@@ -537,6 +565,7 @@ func streamAnthropic(w http.ResponseWriter, model string, events <-chan executor
 
 func nonStreamAnthropic(w http.ResponseWriter, model string, events <-chan executor.ChatEvent, decision simCacheDecision) {
 	assistantText := ""
+	textDelta := ""
 	var usage *translator.Usage
 	var toolUses []map[string]any
 	for ev := range events {
@@ -552,6 +581,8 @@ func nonStreamAnthropic(w http.ResponseWriter, model string, events <-chan execu
 			continue
 		}
 		switch trEv.Kind {
+		case translator.EventTextDelta:
+			textDelta += trEv.Text
 		case translator.EventToolCallStarted:
 			var input any = map[string]any{}
 			if trEv.ToolArgsDelta != "" {
@@ -569,6 +600,9 @@ func nonStreamAnthropic(w http.ResponseWriter, model string, events <-chan execu
 		case translator.EventTurnEnded:
 			usage = trEv.Usage
 		}
+	}
+	if assistantText == "" && textDelta != "" {
+		assistantText = textDelta
 	}
 	content := []map[string]any{}
 	if assistantText != "" {
