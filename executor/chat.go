@@ -267,7 +267,9 @@ func readSSEStream(body io.ReadCloser, out chan<- ChatEvent, autoStopOnTurnEnd, 
 						ev.Server = msg
 					} else {
 						ev.RawTextDelta = extractClaudeShortDelta(payload)
-						fmt.Fprintf(os.Stderr, "[readSSE] raw-fallback n=%d rtd=%q\n", len(payload), ev.RawTextDelta)
+						if len(payload) < 30 {
+							fmt.Fprintf(os.Stderr, "[readSSE] raw-fallback n=%d hex=%x rtd=%q\n", len(payload), payload, ev.RawTextDelta)
+						}
 						// Watch for terminal signals so we can close eagerly
 						// without waiting for the server's idle heartbeats.
 						if msg.GetInteractionUpdate().GetTurnEnded() != nil {
