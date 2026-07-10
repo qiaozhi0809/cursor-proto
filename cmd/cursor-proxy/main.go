@@ -318,7 +318,6 @@ func streamOpenAI(w http.ResponseWriter, model string, events <-chan executor.Ch
 			continue
 		}
 		if blob := translator.FromKvBlob(ev.Server); blob != nil && blob.AssistantText != "" {
-			log.Printf("[stream] KV blob assistant_text=%q", blob.AssistantText)
 			delta := diffSuffix(assistantSent, blob.AssistantText)
 			if delta != "" {
 				assistantSent = blob.AssistantText
@@ -339,7 +338,6 @@ func streamOpenAI(w http.ResponseWriter, model string, events <-chan executor.Ch
 			if trEv.Text == "" {
 				continue
 			}
-			log.Printf("[stream] text_delta=%q", trEv.Text)
 			assistantSent += trEv.Text
 			if payload := tr.Encode(trEv); len(payload) > 0 {
 				w.Write(payload)
@@ -399,7 +397,6 @@ func nonStreamOpenAI(w http.ResponseWriter, model string, events <-chan executor
 			continue
 		}
 		if blob := translator.FromKvBlob(ev.Server); blob != nil && blob.AssistantText != "" {
-			log.Printf("[nonstream] KV blob assistant_text=%q", blob.AssistantText)
 			acc.Text = blob.AssistantText
 			continue
 		}
@@ -409,7 +406,6 @@ func nonStreamOpenAI(w http.ResponseWriter, model string, events <-chan executor
 		}
 		switch trEv.Kind {
 		case translator.EventTextDelta:
-			log.Printf("[nonstream] text_delta=%q", trEv.Text)
 			textDelta += trEv.Text
 		case translator.EventToolCallStarted:
 			acc.Consume(trEv)
