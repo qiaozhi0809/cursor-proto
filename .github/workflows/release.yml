@@ -59,12 +59,15 @@ jobs:
           go build -trimpath -ldflags="-s -w" \
             -o dist/cursor-proxy-${{ matrix.name }} \
             ./cmd/cursor-proxy
+          go build -trimpath -ldflags="-s -w" \
+            -o dist/cursor-login-${{ matrix.name }} \
+            ./cmd/cursor-login
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cursor-proxy-${{ matrix.name }}
-          path: dist/cursor-proxy-${{ matrix.name }}
+          name: cursor-bins-${{ matrix.name }}
+          path: dist/cursor-*-${{ matrix.name }}
           if-no-files-found: error
 
   release:
