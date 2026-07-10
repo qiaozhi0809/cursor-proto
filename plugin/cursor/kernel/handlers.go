@@ -34,6 +34,7 @@ func registerResult() string {
 			"executor_input_formats":  []string{"openai", "claude"},
 			"executor_output_formats": []string{"openai", "claude"},
 			"model_provider":          true,
+			"management_api":          true,
 		},
 	}
 	buf, _ := json.Marshal(body)
