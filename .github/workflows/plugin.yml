@@ -13,14 +13,16 @@ on:
         default: "arm64"
         type: choice
         options: [arm64, amd64]
+  push:
+    branches: ["ci/cursor-plugin-arm64"]
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: build cursor.so ${{ inputs.goarch }}
-    runs-on: ${{ inputs.goarch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    name: build cursor.so ${{ inputs.goarch || 'arm64' }}
+    runs-on: ${{ (inputs.goarch || 'arm64') == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,7 +43,7 @@ jobs:
         env:
           CGO_ENABLED: "1"
           GOOS: linux
-          GOARCH: ${{ inputs.goarch }}
+          GOARCH: ${{ inputs.goarch || 'arm64' }}
         run: |
           mkdir -p dist
           go build -trimpath -ldflags="-s -w" \
@@ -58,7 +60,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cursor-plugin-linux-${{ inputs.goarch }}
+          name: cursor-plugin-linux-${{ inputs.goarch || 'arm64' }}
           path: |
             dist/cursor.so
           if-no-files-found: error
