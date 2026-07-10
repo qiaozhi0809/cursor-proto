@@ -178,7 +178,15 @@ func dispatch(method string, payload []byte) ([]byte, int) {
 	case "auth.identifier":
 		return okEnvelopeJSON(identifierResult()), 0
 	case "auth.parse":
-		return handleAuthParse(payload)
+		raw, rc := handleAuthParse(payload)
+		// Teach the pool-status registry about accounts as they arrive.
+		if rc == 0 {
+			var req authParseRequest
+			if err := json.Unmarshal(payload, &req); err == nil {
+				registerAccountFromParse(req.RawJSON)
+			}
+		}
+		return raw, rc
 	case "auth.refresh":
 		return handleAuthRefresh(payload)
 	case "auth.login.start":
@@ -197,6 +205,11 @@ func dispatch(method string, payload []byte) ([]byte, int) {
 		return okEnvelopeJSON(staticModelsResult()), 0
 	case "model.for_auth":
 		return okEnvelopeJSON(staticModelsResult()), 0
+
+	case "management.register":
+		return okEnvelopeJSON(managementRegisterResult()), 0
+	case "management.handle":
+		return handleManagement(payload)
 
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method, false), 1
