@@ -18,7 +18,7 @@
 // The registry keeps one AccountStatus per account with a 30s TTL so
 // a full pool listing does not fan out an /GetMe + /GetCurrentPeriodUsage
 // call on every browser refresh.
-package main
+package kernel
 
 import (
 	"context"

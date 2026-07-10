@@ -4,7 +4,7 @@
 // CPA. It does NOT touch executor.execute* — those live in main.go
 // (guarded by a sibling worktree). All the state used here lives in
 // status.go (authRegistry + AccountStatus).
-package main
+package kernel
 
 import (
 	"context"
