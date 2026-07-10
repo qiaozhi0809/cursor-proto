@@ -11,11 +11,12 @@ import (
 // UI can render the plugin card without depending on an external
 // image host.
 //
-// The PNG is a 180x180 square with the Cursor mark centred and
-// 20% transparent padding on every side, so it drops into the UI's
-// square logo slots without stretching or crowding the container
-// edges. Fits neatly under CSS backgrounds that draw their own
-// rounded chip / border.
+// The PNG is 114x114 with only ~6% transparent margin around the
+// Cursor mark, matching the visual weight of the SVG logos the CPA
+// management UI ships for its built-in providers (codex/claude/
+// gemini/… each fill their container ~94%). Earlier revisions used
+// heavier padding (60% content) which rendered the mark noticeably
+// smaller than sibling providers.
 //
 //go:embed assets/logo.png
 var logoPNG []byte
