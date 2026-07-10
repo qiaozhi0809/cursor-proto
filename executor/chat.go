@@ -104,6 +104,12 @@ type ChatEvent struct {
 	Server *cursorpb.AgentV1_AgentServerMessage
 	// Raw payload bytes (in case Server failed to unmarshal).
 	Raw []byte
+	// RawTextDelta is populated when Server is nil but the raw bytes match the
+	// Claude short-shape delta pattern `0a04 42020801/02 <utf-8 text>`. Cursor
+	// emits these alongside real InteractionUpdate.text_delta frames for
+	// Claude/opus family models; the frames don't decode against the shipped
+	// proto schema, but the trailing bytes are valid UTF-8 text.
+	RawTextDelta string
 }
 
 // RunChat starts an agent run and yields decoded server messages until the
@@ -258,6 +264,8 @@ func readSSEStream(body io.ReadCloser, out chan<- ChatEvent, autoStopOnTurnEnd, 
 					msg := &cursorpb.AgentV1_AgentServerMessage{}
 					if e := proto.Unmarshal(payload, msg); e == nil {
 						ev.Server = msg
+					} else {
+						ev.RawTextDelta = extractClaudeShortDelta(payload)
 						// Watch for terminal signals so we can close eagerly
 						// without waiting for the server's idle heartbeats.
 						if msg.GetInteractionUpdate().GetTurnEnded() != nil {
@@ -292,6 +300,65 @@ func readSSEStream(body io.ReadCloser, out chan<- ChatEvent, autoStopOnTurnEnd, 
 			return
 		}
 	}
+}
+
+// extractClaudeShortDelta returns the text carried by Cursor's Claude/opus
+// short-shape delta frame, or "" if the frame doesn't match. The frame has
+// the fixed prefix `0a 04 42 02 08 XX` (6 bytes) followed by the delta text
+// as raw UTF-8. Cursor emits these in parallel with proper text_delta frames
+// for Claude family models — some deltas arrive only through this channel,
+// so ignoring them drops output.
+func extractClaudeShortDelta(payload []byte) string {
+	if len(payload) < 7 {
+		return ""
+	}
+	if payload[0] != 0x0a || payload[1] != 0x04 ||
+		payload[2] != 0x42 || payload[3] != 0x02 || payload[4] != 0x08 {
+		return ""
+	}
+	tail := payload[6:]
+	// Reject frames whose tail contains control bytes other than \n\r\t —
+	// those are still binary sub-messages, not text deltas.
+	for _, c := range tail {
+		if c < 0x20 && c != '\n' && c != '\r' && c != '\t' {
+			return ""
+		}
+	}
+	if !utf8Valid(tail) {
+		return ""
+	}
+	return string(tail)
+}
+
+func utf8Valid(b []byte) bool {
+	for i := 0; i < len(b); {
+		c := b[i]
+		if c < 0x80 {
+			i++
+			continue
+		}
+		var need int
+		switch {
+		case c&0xe0 == 0xc0:
+			need = 2
+		case c&0xf0 == 0xe0:
+			need = 3
+		case c&0xf8 == 0xf0:
+			need = 4
+		default:
+			return false
+		}
+		if i+need > len(b) {
+			return false
+		}
+		for j := 1; j < need; j++ {
+			if b[i+j]&0xc0 != 0x80 {
+				return false
+			}
+		}
+		i += need
+	}
+	return true
 }
 
 // sniffAssistantBlob returns true when the message is a KV SetBlobArgs whose

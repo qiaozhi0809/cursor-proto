@@ -314,6 +314,16 @@ func streamOpenAI(w http.ResponseWriter, model string, events <-chan executor.Ch
 	assistantSent := ""
 	sawTurnEnd := false
 	for ev := range events {
+		if ev.RawTextDelta != "" {
+			assistantSent += ev.RawTextDelta
+			if payload := tr.Encode(&translator.Event{Kind: translator.EventTextDelta, Text: ev.RawTextDelta}); len(payload) > 0 {
+				w.Write(payload)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			continue
+		}
 		if ev.Server == nil {
 			continue
 		}
@@ -393,6 +403,10 @@ func nonStreamOpenAI(w http.ResponseWriter, model string, events <-chan executor
 	acc := translator.NonStreamingAccumulator{Model: model}
 	textDelta := ""
 	for ev := range events {
+		if ev.RawTextDelta != "" {
+			textDelta += ev.RawTextDelta
+			continue
+		}
 		if ev.Server == nil {
 			continue
 		}
@@ -511,6 +525,16 @@ func streamAnthropic(w http.ResponseWriter, model string, events <-chan executor
 	assistantSent := ""
 	var lastUsage *translator.Usage
 	for ev := range events {
+		if ev.RawTextDelta != "" {
+			assistantSent += ev.RawTextDelta
+			if payload := tr.Encode(&translator.Event{Kind: translator.EventTextDelta, Text: ev.RawTextDelta}); len(payload) > 0 {
+				w.Write(payload)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			continue
+		}
 		if ev.Server == nil {
 			continue
 		}
@@ -569,6 +593,10 @@ func nonStreamAnthropic(w http.ResponseWriter, model string, events <-chan execu
 	var usage *translator.Usage
 	var toolUses []map[string]any
 	for ev := range events {
+		if ev.RawTextDelta != "" {
+			textDelta += ev.RawTextDelta
+			continue
+		}
 		if ev.Server == nil {
 			continue
 		}
