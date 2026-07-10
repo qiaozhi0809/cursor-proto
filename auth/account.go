@@ -33,6 +33,16 @@ type Account struct {
 	MachineID    string `json:"machine_id,omitempty"`
 	MacMachineID string `json:"mac_machine_id,omitempty"`
 
+	// Refreshable is true when we hold enough material (a refresh_token) to
+	// perform an unattended token refresh. Batch importers that only receive
+	// an access_token flip this to false so the pool inspector can flag those
+	// accounts as "manual re-auth required" when they expire.
+	Refreshable bool `json:"refreshable,omitempty"`
+
+	// RefreshLead is how far ahead of ExpiresAt a refresh should be
+	// attempted. Zero means "use the caller's default".
+	RefreshLead time.Duration `json:"refresh_lead,omitempty"`
+
 	// Session identifiers – regenerated on load if empty.
 	SessionID       string `json:"-"`
 	ConfigVersion   string `json:"-"`
@@ -132,6 +142,8 @@ func NewAccountFromPoll(pr *PollResult, email string) (*Account, error) {
 		IssuedAt:     now,
 		MachineID:    machineID,
 		MacMachineID: macID,
+		Refreshable:  pr.RefreshToken != "",
+		RefreshLead:  30 * time.Minute,
 	}
 	// JWT exp field could be parsed to fill ExpiresAt; keep unset for now.
 	a.FillSessionDefaults(now)

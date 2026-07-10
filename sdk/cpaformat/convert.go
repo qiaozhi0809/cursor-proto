@@ -3,6 +3,7 @@ package cpaformat
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/cursor-proto/auth"
 )
@@ -25,18 +26,20 @@ func FromAccount(a *auth.Account) (*AuthFile, error) {
 
 	out := &AuthFile{
 		CursorTokenStorage: CursorTokenStorage{
-			Type:         ProviderType,
-			AccessToken:  a.AccessToken,
-			RefreshToken: a.RefreshToken,
-			Email:        a.Email,
-			UserID:       a.UserID,
-			AuthID:       a.AuthID,
-			AuthKind:     a.AuthType,
-			MachineID:    a.MachineID,
-			MacMachineID: a.MacMachineID,
-			IssuedAt:     FormatTime(a.IssuedAt),
-			LastRefresh:  FormatTime(a.IssuedAt),
-			Expired:      FormatTime(a.ExpiresAt),
+			Type:             ProviderType,
+			AccessToken:      a.AccessToken,
+			RefreshToken:     a.RefreshToken,
+			Email:            a.Email,
+			UserID:           a.UserID,
+			AuthID:           a.AuthID,
+			AuthKind:         a.AuthType,
+			MachineID:        a.MachineID,
+			MacMachineID:     a.MacMachineID,
+			IssuedAt:         FormatTime(a.IssuedAt),
+			LastRefresh:      FormatTime(a.IssuedAt),
+			Expired:          FormatTime(a.ExpiresAt),
+			Refreshable:      a.Refreshable,
+			RefreshLeadNanos: int64(a.RefreshLead),
 		},
 	}
 	return out, nil
@@ -72,6 +75,8 @@ func (a *AuthFile) ToAccount() (*auth.Account, error) {
 		ExpiresAt:    expires,
 		MachineID:    a.MachineID,
 		MacMachineID: a.MacMachineID,
+		Refreshable:  a.Refreshable,
+		RefreshLead:  time.Duration(a.RefreshLeadNanos),
 	}
 	return acc, nil
 }

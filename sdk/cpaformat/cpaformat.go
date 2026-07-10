@@ -98,6 +98,18 @@ type CursorTokenStorage struct {
 	// "expired" key (not "expires_at") to match CPA's convention;
 	// CPA.ExpirationTime() understands it directly.
 	Expired string `json:"expired,omitempty"`
+
+	// Refreshable is true when we hold enough material (a refresh_token
+	// or equivalent) to perform an unattended token refresh. Set to
+	// false for batch-imported access-only accounts so operators can
+	// spot the "manual re-auth required" ones at a glance.
+	Refreshable bool `json:"refreshable,omitempty"`
+
+	// RefreshLeadNanos is how far ahead of Expired a refresh should be
+	// attempted, in nanoseconds. Zero means "use the caller's default".
+	// Stored as a raw int so the field round-trips as a Go
+	// time.Duration without importing that type into CPA.
+	RefreshLeadNanos int64 `json:"refresh_lead,omitempty"`
 }
 
 // AuthFile is the exact on-disk shape written by the converter and read

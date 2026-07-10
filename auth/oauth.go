@@ -61,6 +61,10 @@ type LoginSession struct {
 	PKCE     *PKCEPair
 	LoginURL string
 	HTTP     *http.Client
+	// PollURLBase overrides the api2 poll endpoint. Empty means "use the
+	// default PollURL". Useful for testing the batch login CLI against a
+	// mock server.
+	PollURLBase string
 }
 
 // StartLogin creates a fresh login session. Present LoginURL to the user in a
@@ -91,7 +95,11 @@ type PollResult struct {
 // Poll performs a single non-blocking check.
 // Returns (nil, nil) if not ready, (result, nil) on success.
 func (s *LoginSession) Poll(ctx context.Context) (*PollResult, error) {
-	url := fmt.Sprintf("%s?uuid=%s&verifier=%s", PollURL, s.UUID, s.PKCE.Verifier)
+	base := s.PollURLBase
+	if base == "" {
+		base = PollURL
+	}
+	url := fmt.Sprintf("%s?uuid=%s&verifier=%s", base, s.UUID, s.PKCE.Verifier)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
