@@ -10,6 +10,7 @@ import (
 	"log"
 	"regexp"
 	"time"
+	"unicode/utf8"
 
 	"github.com/router-for-me/cursor-proto/auth"
 	"github.com/router-for-me/cursor-proto/executor"
@@ -47,15 +48,47 @@ func main() {
 	for ev := range events {
 		i++
 		if ev.Trailer {
-			fmt.Printf("[%d] TRAILER  (%d bytes)  %s\n", i, len(ev.Raw), hexPreview(ev.Raw, 80))
+			fmt.Printf("[%d] TRAILER  (%d bytes)  %s\n", i, len(ev.Raw), hex.EncodeToString(ev.Raw))
 			continue
 		}
 		if ev.Server == nil {
-			fmt.Printf("[%d] RAW  (%d bytes)  %s\n", i, len(ev.Raw), hexPreview(ev.Raw, 40))
+			// Dump the full payload so we can spot mangled bytes.
+			fmt.Printf("[%d] RAW  (%d bytes)  full=%s\n", i, len(ev.Raw), hex.EncodeToString(ev.Raw))
+			tryDecodeShortClaudeDelta(i, ev.Raw)
 			continue
 		}
 		describe(i, ev)
 	}
+}
+
+// tryDecodeShortClaudeDelta looks for the Claude-family short delta shape:
+//
+//	0a 04 42 02 08 XX <utf-8 text bytes>
+//
+// If the bytes after the fixed prefix are valid UTF-8, print them as a probable
+// text delta. Otherwise dump for later analysis.
+func tryDecodeShortClaudeDelta(i int, raw []byte) {
+	if len(raw) < 6 {
+		return
+	}
+	if !(raw[0] == 0x0a && raw[1] == 0x04 && raw[2] == 0x42 && raw[3] == 0x02 && raw[4] == 0x08) {
+		return
+	}
+	tail := raw[6:]
+	if utf8.Valid(tail) && !containsNonPrintable(tail) {
+		fmt.Printf("     ↑ probable text delta: <%s>\n", string(tail))
+	} else {
+		fmt.Printf("     ↑ short-shape but tail not printable utf-8\n")
+	}
+}
+
+func containsNonPrintable(b []byte) bool {
+	for _, c := range b {
+		if c < 0x20 && c != '\n' && c != '\r' && c != '\t' {
+			return true
+		}
+	}
+	return false
 }
 
 func describe(i int, ev executor.ChatEvent) {
@@ -78,9 +111,6 @@ func describe(i int, ev executor.ChatEvent) {
 			}
 			fmt.Printf("[%d] KV.SetBlob blob_id=%x  data=%d bytes\n", i, preview, len(payload))
 			fmt.Printf("     head: %s\n", hexPreview(payload, 80))
-			if len(payload) > 80 {
-				fmt.Printf("     tail: %s\n", hexPreview(payload[max(0, len(payload)-80):], 80))
-			}
 			for _, s := range printable.FindAll(payload, -1) {
 				if len(s) > 8 {
 					fmt.Printf("     text: %s\n", string(s))
@@ -114,11 +144,4 @@ func truncate(s string, n int) string {
 		return s[:n] + "…"
 	}
 	return s
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
