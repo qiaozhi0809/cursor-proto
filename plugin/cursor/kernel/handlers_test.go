@@ -1,4 +1,4 @@
-package main
+package kernel
 
 import (
 	"encoding/json"
@@ -164,19 +164,21 @@ func TestDispatch_AuthRefresh_Passthrough(t *testing.T) {
 	}
 }
 
-func TestDispatch_ExecutorExecuteStream_NotImplemented(t *testing.T) {
+func TestDispatch_ExecutorExecuteStream_BadRequest(t *testing.T) {
+	// Empty payload can't be decoded as JSON, so we expect a
+	// structured bad_request envelope (rc=0 with OK=false).
 	raw, rc := dispatch("executor.execute_stream", nil)
-	if rc == 0 {
-		t.Fatalf("expected non-zero rc for stub, got 0")
+	if rc != 0 {
+		t.Fatalf("expected rc=0 for structured error, got %d", rc)
 	}
 	var env envelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if env.OK {
-		t.Fatal("expected OK=false for stub")
+		t.Fatal("expected OK=false for empty payload")
 	}
-	if env.Error == nil || env.Error.Code != "not_implemented" {
+	if env.Error == nil || env.Error.Code != "bad_request" {
 		t.Errorf("unexpected error: %+v", env.Error)
 	}
 }

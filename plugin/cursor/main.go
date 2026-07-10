@@ -12,27 +12,18 @@
 // cliproxyPluginFree, and cliproxyPluginShutdown. CPA dispatches every
 // interaction as a JSON envelope through cliproxyPluginCall(method, ...).
 //
-// Scope of this pass (Phase 7f):
+// All the plugin's actual logic lives in the sibling `kernel`
+// package. main.go is a thin cgo shim that:
 //
-//   - plugin.register / plugin.reconfigure / plugin.shutdown lifecycle.
-//   - auth.identifier + auth.parse for our on-disk "cursor" JSON shape
-//     (produced by cmd/cursor-to-cpa).
-//   - auth.refresh — currently a passthrough that returns the existing
-//     storage; wiring up the real refresh path is a follow-up (see
-//     docs/phase-7f-plugin-plan.md).
-//   - executor.identifier reports the "cursor" provider.
-//   - model.static returns the shipped Cursor model list so CPA's
-//     scheduler can advertise them.
-//   - executor.execute_stream and executor.count_tokens return an
-//     explicit "not implemented" error at the moment. Both are the
-//     next milestone: `docs/phase-7f-plugin-plan.md` records the exact
-//     data path we need to close (protocol translation + Cursor
-//     RunSSE + host stream chunk emission).
+//   - stores the host callback pointer for host.stream.emit /
+//     host.stream.close reflected calls,
+//   - marshals bytes across the C ABI boundary, and
+//   - delegates dispatch to kernel.Dispatch.
 //
-// The plugin intentionally does NOT depend on CPA's Go module. All the
-// ABI types are declared locally so we can build against just the
-// standard library plus cursor-proto's own packages, keeping the
-// deliverable self-contained.
+// Splitting the code this way lets tests and the E2E harness import
+// the kernel package directly (Go's runtime blocks two Go binaries
+// from sharing a heap, so dlopen'ing this .dylib from another Go
+// binary is not viable — see cmd/plugin-e2e/main.go).
 package main
 
 /*
@@ -91,31 +82,47 @@ static void free_host_buffer(void* ptr, size_t len) {
 import "C"
 
 import (
-	"encoding/json"
+	"fmt"
 	"unsafe"
+
+	"github.com/router-for-me/cursor-proto/plugin/cursor/kernel"
 )
 
 // abiVersion matches CPA's pluginabi.ABIVersion. Kept in sync manually
 // so this plugin does not need to import CPA's module.
 const abiVersion uint32 = 1
 
-// pluginName is the stable identifier reported to CPA via
-// plugin.register, auth.identifier, and executor.identifier.
-const pluginName = "cursor"
-
-// envelope is the plugin-side view of pluginabi.Envelope. Duplicated
-// here (rather than imported) so this binary depends only on the
-// standard library + cursor-proto's own packages.
-type envelope struct {
-	OK     bool            `json:"ok"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  *envelopeError  `json:"error,omitempty"`
+// init wires the cgo host callback into the kernel so the kernel's
+// streaming handlers can emit chunks without knowing anything about
+// C. Tests replace the callback per-dispatch via kernel.Dispatch's
+// emitter argument.
+func init() {
+	kernel.SetHostInvoker(cgoHostInvoke)
 }
 
-type envelopeError struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	Retryable bool   `json:"retryable,omitempty"`
+// cgoHostInvoke calls the host through the stored C API. Returns
+// the response bytes or an error.
+func cgoHostInvoke(method string, payload []byte) ([]byte, error) {
+	cMethod := C.CString(method)
+	defer C.free(unsafe.Pointer(cMethod))
+	var cPayload *C.uint8_t
+	if len(payload) > 0 {
+		cPayload = (*C.uint8_t)(C.CBytes(payload))
+		defer C.free(unsafe.Pointer(cPayload))
+	}
+	var buf C.cliproxy_buffer
+	rc := C.call_host_api(cMethod, cPayload, C.size_t(len(payload)), &buf)
+	var out []byte
+	if buf.ptr != nil && buf.len > 0 {
+		out = C.GoBytes(buf.ptr, C.int(buf.len))
+	}
+	if buf.ptr != nil {
+		C.free_host_buffer(buf.ptr, buf.len)
+	}
+	if rc != 0 {
+		return out, fmt.Errorf("host call %s returned %d: %s", method, int(rc), string(out))
+	}
+	return out, nil
 }
 
 // main is required by go build but never executed for a c-shared library.
@@ -141,7 +148,7 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 		response.len = 0
 	}
 	if method == nil {
-		writeResponse(response, errorEnvelope("invalid_method", "method is required", false))
+		writeResponse(response, kernel.ErrorEnvelope("invalid_method", "method is required", false))
 		return 1
 	}
 	m := C.GoString(method)
@@ -149,7 +156,7 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	if request != nil && requestLen > 0 {
 		payload = C.GoBytes(unsafe.Pointer(request), C.int(requestLen))
 	}
-	raw, rc := dispatch(m, payload)
+	raw, rc := kernel.Dispatch(m, payload, nil)
 	writeResponse(response, raw)
 	return C.int(rc)
 }
@@ -164,56 +171,6 @@ func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
 
 //export cliproxyPluginShutdown
 func cliproxyPluginShutdown() {}
-
-// dispatch routes a plugin ABI method to its handler. It returns the
-// envelope bytes to send back to the host and the plugin-call return
-// code (0 on success, non-zero on error).
-func dispatch(method string, payload []byte) ([]byte, int) {
-	switch method {
-	case "plugin.register", "plugin.reconfigure":
-		return okEnvelopeJSON(registerResult()), 0
-	case "plugin.shutdown":
-		return okEnvelopeJSON(`{}`), 0
-
-	case "auth.identifier":
-		return okEnvelopeJSON(identifierResult()), 0
-	case "auth.parse":
-		return handleAuthParse(payload)
-	case "auth.refresh":
-		return handleAuthRefresh(payload)
-	case "auth.login.start":
-		return errorEnvelope("not_implemented", "cursor login is performed by cursor-proto's cmd/cursor-login binary; convert its output with cursor-to-cpa", false), 1
-	case "auth.login.poll":
-		return errorEnvelope("not_implemented", "cursor login poll is not exposed through the plugin ABI", false), 1
-
-	case "executor.identifier":
-		return okEnvelopeJSON(identifierResult()), 0
-	case "executor.execute", "executor.execute_stream":
-		return errorEnvelope("not_implemented", "cursor executor streaming is a follow-up milestone; see docs/phase-7f-plugin-plan.md", true), 1
-	case "executor.count_tokens":
-		return errorEnvelope("not_implemented", "cursor token counting is a follow-up milestone", true), 1
-
-	case "model.register", "model.static":
-		return okEnvelopeJSON(staticModelsResult()), 0
-	case "model.for_auth":
-		return okEnvelopeJSON(staticModelsResult()), 0
-
-	default:
-		return errorEnvelope("unknown_method", "unknown method: "+method, false), 1
-	}
-}
-
-// okEnvelopeJSON wraps a pre-marshaled result JSON in an envelope.
-func okEnvelopeJSON(result string) []byte {
-	buf, _ := json.Marshal(envelope{OK: true, Result: json.RawMessage(result)})
-	return buf
-}
-
-// errorEnvelope constructs an OK=false envelope with a code + message.
-func errorEnvelope(code, message string, retryable bool) []byte {
-	buf, _ := json.Marshal(envelope{OK: false, Error: &envelopeError{Code: code, Message: message, Retryable: retryable}})
-	return buf
-}
 
 // writeResponse copies raw into the host-owned response buffer using
 // C.CBytes (the host frees it via cliproxyPluginFree).
